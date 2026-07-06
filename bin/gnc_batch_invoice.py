@@ -5,7 +5,7 @@ Copyright (C) 2026 Alan Johnson / contributors
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Read a GnuCash SQLite/XML book for customer and invoice IDs, scan uploaded
-customer lists, and generate GnuCash invoice import CSV rows.
+customer lists, scan selectable customers from the book, and generate GnuCash invoice import CSV rows.
 """
 from __future__ import annotations
 
@@ -82,6 +82,10 @@ def err(message: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
+def text_value(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
 def local_name(tag: str) -> str:
     if "}" in tag:
         return tag.rsplit("}", 1)[1]
@@ -120,7 +124,7 @@ def try_sqlite_book(book_path: Path) -> tuple[list[Customer], list[str]] | None:
                 for row in cur.execute(query):
                     cid = str(row[0] or "").strip()
                     if cid:
-                        customers.append(Customer(cid, str(row[1] or ""), str(row[2] or ""), str(row[3] or "")))
+                        customers.append(Customer(cid, text_value(row[1]), text_value(row[2]), text_value(row[3])))
 
         invoice_ids: list[str] = []
         if "invoices" in tables:
@@ -223,17 +227,43 @@ def increment_invoice_id(start: str, offset: int) -> str:
     return f"{prefix}{str(int(digits) + offset).zfill(len(digits))}"
 
 
-def customers_to_json(customers: list[Customer]) -> list[dict[str, str]]:
-    return [{"id": c.id, "name": c.name, "active": c.active, "guid": c.guid} for c in customers]
+def customer_is_active(value: Any) -> bool:
+    """Return a practical active/inactive flag for GnuCash customer rows.
+
+    SQLite books normally use customers.active as 1 or 0. XML exports may use
+    text values. Missing/blank active values are treated as active so older or
+    unusual books do not hide customers unexpectedly.
+    """
+    raw = str(value or "").strip().lower()
+    if raw in {"0", "false", "no", "n", "inactive"}:
+        return False
+    return True
+
+
+def customers_to_json(customers: list[Customer]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": c.id,
+            "name": c.name,
+            "active": c.active,
+            "active_bool": customer_is_active(c.active),
+            "guid": c.guid,
+        }
+        for c in customers
+    ]
 
 
 def scan_book_json(args: argparse.Namespace) -> None:
     customers, invoice_ids = scan_book(args.book)
+    active_count = sum(1 for c in customers if customer_is_active(c.active))
+    inactive_count = len(customers) - active_count
     print_json(
         {
             "ok": True,
             "book": str(Path(args.book).expanduser()),
             "customer_count": len(customers),
+            "active_customer_count": active_count,
+            "inactive_customer_count": inactive_count,
             "invoice_count": len(invoice_ids),
             "next_invoice_id": suggest_next_invoice_id(invoice_ids, args.prefix or "", int(args.padding or 0)),
             "customers": customers_to_json(customers),
@@ -334,7 +364,7 @@ def match_customer_ids(ids: Iterable[str], customers: list[Customer]) -> dict[st
         if customer is None:
             unmatched.append(cid)
         else:
-            matched.append({"id": customer.id, "name": customer.name, "active": customer.active, "guid": customer.guid})
+            matched.append({"id": customer.id, "name": customer.name, "active": customer.active, "active_bool": customer_is_active(customer.active), "guid": customer.guid})
     return {"matched": matched, "unmatched": unmatched}
 
 

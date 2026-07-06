@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const APP_NAME = 'GnuCash Invoice Batch Creator';
-const APP_VERSION = '0.1.2';
+const APP_VERSION = '0.1.3';
 define('BASE_PATH', dirname(__DIR__));
 define('CONFIG_PATH', BASE_PATH . '/config/config.php');
 define('CONFIG_EXAMPLE_PATH', BASE_PATH . '/config/config.example.php');

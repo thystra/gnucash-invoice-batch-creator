@@ -2,7 +2,7 @@
 
 A local/internal-network web application for creating batch customer invoice CSV files that can be imported into GnuCash, and for generating batch customer report PDFs from a revised uploaded GnuCash book.
 
-The initial goal is monthly or recurring invoices/dues: create an entity/profile, upload a copy of that entity's GnuCash book, upload or reuse a customer list, choose shared invoice parameters once, preview the batch, optionally save the customer group and/or invoice template, then generate a GnuCash invoice import CSV. After the CSV is imported into GnuCash, upload the revised book copy and reuse the same group to generate Customer Report PDFs as a ZIP.
+The initial goal is monthly or recurring invoices/dues: create an entity/profile, upload a copy of that entity's GnuCash book, select customers directly from the uploaded GnuCash book, choose shared invoice parameters once, preview the batch, optionally save the customer group and/or invoice template, then generate a GnuCash invoice import CSV. After the CSV is imported into GnuCash, upload the revised book copy and reuse the same group to generate Customer Report PDFs as a ZIP.
 
 Repository: <https://github.com/thystra/gnucash-invoice-batch-creator>
 
@@ -12,8 +12,11 @@ Repository: <https://github.com/thystra/gnucash-invoice-batch-creator>
 - Stores multiple uploaded GnuCash book copies per entity/profile.
 - Scans the active uploaded GnuCash book copy for customers and existing invoice IDs.
 - Suggests the next available invoice number.
-- Lets the user upload a CSV, text, or optionally XLSX file containing customer IDs.
-- Matches uploaded IDs against GnuCash customers.
+- Presents customers from the uploaded GnuCash book in the GUI, using the `customers.id` column as the customer ID.
+- Filters inactive customers by default, based on `customers.active` where `1` is active and `0` is inactive.
+- Provides a Show inactive customers option for unusual or historical billing batches.
+- Still supports optional CSV, text, or XLSX customer-ID uploads as a fallback for external rosters.
+- Matches selected or uploaded IDs against GnuCash customers.
 - Walks the user through a local web wizard to create batch invoices.
 - Saves reusable customer groups under each entity/profile.
 - Saves reusable invoice templates under each entity/profile.
@@ -189,7 +192,7 @@ The first-run wizard asks for:
 - Entity/profile name, such as `ORG A`
 - An initial GnuCash book copy upload
 
-After creating the profile, the app activates it and sends you to the batch wizard.
+After creating the profile, the app activates it and sends you to the batch wizard. The wizard scans the uploaded book and lists active customers directly from the GnuCash `customers` table.
 
 ## Settings page
 
@@ -207,6 +210,22 @@ The Settings page lets you:
 The app writes local settings to `config/config.php`, which is intentionally ignored by git.
 
 
+## Batch invoice wizard workflow
+
+The primary workflow is now fully GUI-driven:
+
+1. Upload or select an active GnuCash book copy for the current entity/profile.
+2. Open **Batch Wizard**.
+3. Review the customer list scanned from the book. Active customers are checked by default.
+4. Use **Show inactive customers** only when you deliberately need to include inactive customers. Inactive customers are visible but unchecked by default.
+5. Continue with the selected customers.
+6. Enter the shared invoice values, such as description, dates, income account, A/R account, price, posting option, and tax settings.
+7. Optionally save the selected customers as a reusable group and save the invoice values as a reusable template.
+8. Generate and download the GnuCash invoice CSV.
+
+The old customer-ID upload workflow remains under **Saved groups and alternate input** for external rosters, but it is no longer required for normal use.
+
+
 ## Batch Customer Reports
 
 The report workflow is:
@@ -218,7 +237,7 @@ The report workflow is:
 5. Open **Reports**, select the same saved customer group, choose the date range and A/R accounts, and generate PDFs.
 6. Download the generated ZIP.
 
-The v0.1.2 report generator intentionally uses a tool-owned HTML template rendered by Chromium rather than trying to automate GnuCash's Scheme report engine for each customer. This is more reliable for bulk output and allows better pagination controls.
+The v0.1.3 report generator intentionally uses a tool-owned HTML template rendered by Chromium rather than trying to automate GnuCash's Scheme report engine for each customer. This is more reliable for bulk output and allows better pagination controls.
 
 For brand continuity, each profile can store:
 
@@ -246,14 +265,14 @@ python3 bin/gnc_batch_invoice.py customer-reports --book /path/to/book.gnucash -
 
 ## Upload file formats
 
-Supported customer-ID upload formats:
+Optional fallback customer-ID upload formats:
 
 - CSV with a column named one of: `customer_id`, `customer`, `gnucash_customer_id`, `owner_id`, `id`
 - CSV without a recognized header, where the scanner searches cells for exact GnuCash customer IDs
 - Plain text, one customer ID per line
 - XLSX if `python3-openpyxl` is installed
 
-Only customer IDs that exist in the active GnuCash book copy are included in the generated CSV. Unmatched IDs are shown in the preview.
+Only customer IDs that exist in the active GnuCash book copy are included in the generated CSV. Unmatched IDs are shown in the preview. For the normal GUI workflow, the customer list is read directly from the uploaded book and no separate customer-ID file is needed.
 
 Supported GnuCash book-copy upload extensions:
 
@@ -295,7 +314,7 @@ python3 bin/gnc_batch_invoice.py generate --book /path/to/book.gnucash --out /tm
 ## Suggested first test
 
 1. Create an entity/profile from a copy of your GnuCash book.
-2. Upload a small customer-ID list with two or three customers.
+2. Open the Batch Wizard and select two or three active customers from the scanned book list.
 3. Generate the invoice CSV.
 4. Import it into a test GnuCash file as invoices.
 5. Verify invoice IDs, customers, dates, accounts, posting state, and amounts.
@@ -307,7 +326,7 @@ Initial commit suggestion:
 ```bash
 git add README.md LICENSE .gitignore .github/FUNDING.yml index.html app bin config/config.example.php public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
 
-git commit -m "v0.1.2 - Add batch customer report PDF generation"
+git commit -m "v0.1.3 - Select customers directly from uploaded GnuCash books"
 ```
 
 Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.

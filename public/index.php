@@ -23,6 +23,7 @@ try {
         'delete_profile' => action_delete_profile(),
         'wizard' => page_wizard(),
         'scan_upload' => action_scan_upload(),
+        'select_book_customers' => action_select_book_customers(),
         'generate' => action_generate(),
         'groups' => page_groups(),
         'templates' => page_templates(),
@@ -53,7 +54,7 @@ function page_home(): void
     $profile = active_profile();
     $book = current_book_path();
     echo '<div class="grid">';
-    echo '<section class="card"><h2>Create a batch</h2><p>Upload a customer ID file, choose invoice parameters, and generate a GnuCash invoice import CSV for the active entity.</p><p><a class="button" href="?action=wizard">Start batch wizard</a></p></section>';
+    echo '<section class="card"><h2>Create a batch</h2><p>Select customers directly from the active GnuCash book, choose invoice parameters, and generate a GnuCash invoice import CSV for the active entity.</p><p><a class="button" href="?action=wizard">Open batch wizard</a></p></section>';
     echo '<section class="card"><h2>Active entity</h2><p><strong>' . h($profile['name'] ?? '(none)') . '</strong></p><p><strong>Book copy:</strong><br>' . h($book ?: '(none selected)') . '</p><p><a class="button secondary" href="?action=config">Manage entities/books</a></p></section>';
     echo '<section class="card"><h2>Saved groups</h2><p>Reuse a customer group for monthly dues or repeated billing runs. Groups are stored per entity.</p><p><a class="button secondary" href="?action=groups">Manage groups</a></p></section>';
     echo '<section class="card"><h2>Templates</h2><p>Reuse descriptions, accounts, dates, posting settings, taxes, and price levels. Templates are stored per entity.</p><p><a class="button secondary" href="?action=templates">Manage templates</a></p></section>';
@@ -207,12 +208,12 @@ function render_book_scan_result(): void
     $result = run_python(['scan-book', '--book', $book, '--prefix', (string)app_config('id_prefix', ''), '--padding', (string)app_config('id_padding', 0)]);
     if ($result['ok'] && is_array($result['json'])) {
         echo '<p><strong>Active book:</strong> ' . h($book) . '</p>';
-        echo '<p><strong>Customers:</strong> ' . h($result['json']['customer_count'] ?? 0) . '</p>';
+        echo '<p><strong>Customers:</strong> ' . h($result['json']['customer_count'] ?? 0) . ' total; ' . h($result['json']['active_customer_count'] ?? 0) . ' active; ' . h($result['json']['inactive_customer_count'] ?? 0) . ' inactive</p>';
         echo '<p><strong>Existing invoice IDs:</strong> ' . h($result['json']['invoice_count'] ?? 0) . '</p>';
         echo '<p><strong>Suggested next invoice ID:</strong> ' . h($result['json']['next_invoice_id'] ?? '') . '</p>';
         echo '<details><summary>First 25 customers</summary><table><tr><th>ID</th><th>Name</th><th>Active</th></tr>';
         foreach (array_slice($result['json']['customers'] ?? [], 0, 25) as $customer) {
-            echo '<tr><td>' . h($customer['id'] ?? '') . '</td><td>' . h($customer['name'] ?? '') . '</td><td>' . h($customer['active'] ?? '') . '</td></tr>';
+            echo '<tr><td>' . h($customer['id'] ?? '') . '</td><td>' . h($customer['name'] ?? '') . '</td><td>' . (php_customer_is_active($customer) ? 'active' : 'inactive') . '</td></tr>';
         }
         echo '</table></details>';
     } else {
@@ -285,7 +286,7 @@ function action_create_profile(): never
     save_profile($profile);
     update_config(['active_profile' => $slug]);
     unset($_SESSION['batch_scan'], $_SESSION['last_generate']);
-    flash('ok', 'Created entity/profile: ' . $name);
+    flash('ok', 'Created entity/profile: ' . $name . '. The wizard will scan the uploaded book and list active customers.');
     $after = (string)($_POST['after_create'] ?? 'config');
     redirect_to($after === 'wizard' ? 'wizard' : 'config');
 }
@@ -299,7 +300,7 @@ function action_upload_book(): never
     $profile['active_book'] = $book['file'];
     save_profile($profile);
     unset($_SESSION['batch_scan']);
-    flash('ok', 'Uploaded and activated GnuCash book copy: ' . ($book['original_name'] ?? $book['file']));
+    flash('ok', 'Uploaded and activated GnuCash book copy: ' . ($book['original_name'] ?? $book['file']) . '. Open the Batch Wizard to select customers from the book.');
     redirect_to('config');
 }
 
@@ -370,30 +371,127 @@ function action_delete_profile(): never
     redirect_to(list_profiles() ? 'config' : 'setup_profile');
 }
 
+function php_customer_is_active(array $customer): bool
+{
+    if (array_key_exists('active_bool', $customer)) {
+        $flag = filter_var($customer['active_bool'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        if ($flag !== null) {
+            return $flag;
+        }
+        if (is_bool($customer['active_bool'])) {
+            return $customer['active_bool'];
+        }
+    }
+    $raw = strtolower(trim((string)($customer['active'] ?? '')));
+    return !in_array($raw, ['0', 'false', 'no', 'n', 'inactive'], true);
+}
+
+function active_status_label(array $customer): string
+{
+    return php_customer_is_active($customer) ? 'active' : 'inactive';
+}
+
+function scan_book_for_wizard(string $book): array
+{
+    return run_python(['scan-book', '--book', $book, '--prefix', (string)app_config('id_prefix', ''), '--padding', (string)app_config('id_padding', 0)]);
+}
+
 function page_wizard(): void
 {
     $book = require_book_configured();
     $profile = active_profile();
     render_header('Batch Wizard');
     echo '<p class="muted">Active entity: <strong>' . h($profile['name'] ?? '') . '</strong>. Active book copy: <code>' . h(basename($book)) . '</code>.</p>';
+
     $groups = list_named_json(profile_data_dir('groups'));
-    echo '<section class="card"><h2>1. Choose customer IDs</h2>';
+    $showInactive = (string)($_GET['show_inactive'] ?? '') === '1';
+    $bookScan = scan_book_for_wizard($book);
+
+    echo '<section class="card"><h2>1. Select customers from the active GnuCash book</h2>';
+    echo '<p class="help">The wizard now reads the <code>customers</code> table from the uploaded GnuCash book copy. Active customers are shown by default. Inactive customers are hidden unless you choose to display them.</p>';
+
+    if (!$bookScan['ok'] || !is_array($bookScan['json'])) {
+        echo '<div class="flash error">Unable to scan customers from the active book.<pre>' . h(($bookScan['stderr'] ?? '') . "\n" . ($bookScan['stdout'] ?? '')) . '</pre></div>';
+    } else {
+        $customers = is_array($bookScan['json']['customers'] ?? null) ? $bookScan['json']['customers'] : [];
+        $activeCount = (int)($bookScan['json']['active_customer_count'] ?? count(array_filter($customers, 'php_customer_is_active')));
+        $inactiveCount = (int)($bookScan['json']['inactive_customer_count'] ?? max(0, count($customers) - $activeCount));
+        $visible = array_values(array_filter($customers, fn($c) => $showInactive || php_customer_is_active($c)));
+        echo '<p><span class="badge">Total customers: ' . h(count($customers)) . '</span> <span class="badge">Active: ' . h($activeCount) . '</span> <span class="badge">Inactive: ' . h($inactiveCount) . '</span> <span class="badge">Next invoice: ' . h($bookScan['json']['next_invoice_id'] ?? '') . '</span></p>';
+        echo '<div class="actions">';
+        if ($showInactive) {
+            echo '<a class="button secondary" href="?action=wizard">Hide inactive customers</a>';
+        } else {
+            echo '<a class="button secondary" href="?action=wizard&show_inactive=1">Show inactive customers</a>';
+        }
+        echo '</div>';
+
+        if (!$visible) {
+            echo '<div class="flash warn">No customers are visible with the current filter.</div>';
+        } else {
+            echo '<form method="post" action="?action=select_book_customers">' . csrf_field();
+            echo '<div class="table-tools"><button class="secondary" type="button" onclick="document.querySelectorAll(\'.customer-pick\').forEach(cb => cb.checked = true)">Select all visible</button> <button class="secondary" type="button" onclick="document.querySelectorAll(\'.customer-pick\').forEach(cb => cb.checked = false)">Clear visible</button></div>';
+            echo '<table class="customer-picker"><tr><th>Select</th><th>ID</th><th>Name</th><th>Status</th></tr>';
+            foreach ($visible as $customer) {
+                $isActive = php_customer_is_active($customer);
+                $checked = $isActive ? ' checked' : '';
+                $rowClass = $isActive ? '' : ' class="inactive-row"';
+                echo '<tr' . $rowClass . '><td><input class="customer-pick" type="checkbox" name="customer_ids[]" value="' . h($customer['id'] ?? '') . '"' . $checked . '></td><td><code>' . h($customer['id'] ?? '') . '</code></td><td>' . h($customer['name'] ?? '') . '</td><td>' . ($isActive ? '<span class="badge">active</span>' : '<span class="badge bad">inactive</span>') . '</td></tr>';
+            }
+            echo '</table>';
+            echo '<div class="actions"><button type="submit">Continue with selected customers</button></div></form>';
+        }
+    }
+    echo '</section>';
+
+    echo '<section class="card"><h2>Saved groups and alternate input</h2>';
+    echo '<p class="help">Saved groups are still available for repeat monthly runs. Uploading a separate customer-ID file remains available as a fallback for external rosters, but is no longer required.</p>';
     echo '<form method="post" enctype="multipart/form-data" action="?action=scan_upload">' . csrf_field();
-    echo '<label>Upload customer ID file</label><input type="file" name="customer_file" accept=".csv,.txt,.tsv,.xlsx">';
-    echo '<div class="help">CSV/text/XLSX. A recognized customer ID column is best, but exact ID matching is also attempted.</div>';
     if ($groups) {
-        echo '<label>Or load saved group for this entity</label><select name="saved_group"><option value="">-- do not load a group --</option>';
+        echo '<label>Load saved group for this entity</label><select name="saved_group"><option value="">-- do not load a group --</option>';
         foreach ($groups as $group) {
             echo '<option value="' . h($group['slug']) . '">' . h($group['name']) . ' (' . h(count($group['data']['customer_ids'] ?? [])) . ' customers)</option>';
         }
         echo '</select>';
+    } else {
+        echo '<p>No saved groups exist for this entity yet. Select customers above, then save the group in step 3.</p>';
     }
-    echo '<div class="actions"><button type="submit">Scan / Load Customers</button></div></form></section>';
+    echo '<details><summary>Optional: upload a customer ID file instead</summary>';
+    echo '<label>Upload customer ID file</label><input type="file" name="customer_file" accept=".csv,.txt,.tsv,.xlsx">';
+    echo '<div class="help">CSV/text/XLSX. A recognized customer ID column is best, but exact ID matching is also attempted.</div>';
+    echo '</details>';
+    echo '<div class="actions"><button type="submit">Load saved group / scan uploaded file</button></div></form></section>';
 
     if (!empty($_SESSION['batch_scan'])) {
         render_params_form($_SESSION['batch_scan']);
     }
     render_footer();
+}
+
+function action_select_book_customers(): never
+{
+    check_csrf();
+    $book = require_book_configured();
+    $ids = $_POST['customer_ids'] ?? [];
+    if (!is_array($ids)) {
+        $ids = [];
+    }
+    $ids = array_values(array_filter(array_map('strval', $ids), fn($id) => trim($id) !== ''));
+    if (!$ids) {
+        flash('error', 'Select at least one customer from the GnuCash book.');
+        redirect_to('wizard');
+    }
+    $result = run_python(
+        ['scan-ids', '--book', $book, '--prefix', (string)app_config('id_prefix', ''), '--padding', (string)app_config('id_padding', 0)],
+        ['customer_ids' => $ids]
+    );
+    if (!$result['ok'] || !is_array($result['json'])) {
+        flash('error', 'Customer selection failed: ' . trim(($result['stderr'] ?? '') . ' ' . ($result['stdout'] ?? '')));
+        redirect_to('wizard');
+    }
+    $_SESSION['batch_scan'] = $result['json'];
+    flash('ok', 'Selected ' . count($result['json']['matched'] ?? []) . ' customers from the GnuCash book.');
+    redirect_to('wizard');
 }
 
 function action_scan_upload(): never
@@ -409,19 +507,22 @@ function action_scan_upload(): never
             flash('error', 'Saved group could not be loaded.');
             redirect_to('wizard');
         }
-        $result = run_python(['scan-ids', '--book', $book], ['customer_ids' => $group['customer_ids']]);
+        $result = run_python(
+            ['scan-ids', '--book', $book, '--prefix', (string)app_config('id_prefix', ''), '--padding', (string)app_config('id_padding', 0)],
+            ['customer_ids' => $group['customer_ids']]
+        );
     } else {
         if (empty($_FILES['customer_file']) || ($_FILES['customer_file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
-            flash('error', 'Upload a customer ID file or choose a saved group.');
+            flash('error', 'Choose a saved group, select customers from the GnuCash book above, or upload a customer ID file.');
             redirect_to('wizard');
         }
         $original = basename((string)$_FILES['customer_file']['name']);
         $target = profile_data_dir('uploads') . '/' . date('Ymd-His') . '-' . bin2hex(random_bytes(4)) . '-' . slugify($original);
         if (!move_uploaded_file((string)$_FILES['customer_file']['tmp_name'], $target)) {
-            flash('error', 'Unable to store uploaded file.');
+            flash('error', 'Unable to store uploaded file. Check runtime directory write permissions.');
             redirect_to('wizard');
         }
-        $result = run_python(['scan-upload', '--book', $book, '--input', $target]);
+        $result = run_python(['scan-upload', '--book', $book, '--input', $target, '--prefix', (string)app_config('id_prefix', ''), '--padding', (string)app_config('id_padding', 0)]);
     }
 
     if (!$result['ok'] || !is_array($result['json'])) {
@@ -443,11 +544,12 @@ function render_params_form(array $scan): void
     $suggested = $bookScan['json']['next_invoice_id'] ?? '';
     $templates = list_named_json(profile_data_dir('templates'));
 
-    echo '<section class="card"><h2>2. Review matched customers</h2>';
+    echo '<section class="card"><h2>2. Review selected customers</h2>';
     echo '<p><span class="badge">Matched: ' . h(count($matched)) . '</span> <span class="badge">Unmatched: ' . h(count($unmatched)) . '</span></p>';
-    echo '<details open><summary>Matched customers</summary><table><tr><th>ID</th><th>Name</th></tr>';
+    echo '<details open><summary>Selected customers</summary><table><tr><th>ID</th><th>Name</th><th>Status</th></tr>';
     foreach ($matched as $customer) {
-        echo '<tr><td>' . h($customer['id'] ?? '') . '</td><td>' . h($customer['name'] ?? '') . '</td></tr>';
+        $isActive = php_customer_is_active($customer);
+        echo '<tr><td>' . h($customer['id'] ?? '') . '</td><td>' . h($customer['name'] ?? '') . '</td><td>' . ($isActive ? '<span class="badge">active</span>' : '<span class="badge bad">inactive</span>') . '</td></tr>';
     }
     echo '</table></details>';
     if ($unmatched) {

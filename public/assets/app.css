@@ -62,3 +62,8 @@ code { background: rgba(127,127,127,.12); border-radius: 5px; padding: 0.08rem 0
 .badge.bad { border-color: var(--danger); color: var(--danger); }
 .checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.2rem 1rem; }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
+.table-tools { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin: 0.8rem 0 0.4rem; }
+.customer-picker td:first-child, .customer-picker th:first-child { width: 5rem; text-align: center; }
+.customer-picker input[type=checkbox] { width: 1.1rem; height: 1.1rem; }
+.inactive-row { opacity: 0.72; }
+.inactive-row td { background: rgba(180, 35, 24, 0.04); }
