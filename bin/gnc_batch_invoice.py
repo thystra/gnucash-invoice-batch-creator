@@ -141,6 +141,107 @@ def try_sqlite_book(book_path: Path) -> tuple[list[Customer], list[str]] | None:
         con.close()
 
 
+
+
+def try_sqlite_accounts(book_path: Path) -> list[dict[str, Any]] | None:
+    """Return GnuCash account metadata from a SQLite book.
+
+    The invoice importer expects account names/full account paths, not GUIDs,
+    so the web UI uses these rows to offer valid account selections.
+    """
+    try:
+        con = sqlite3.connect(f"file:{book_path}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return None
+    try:
+        cur = con.cursor()
+        tables = {row[0] for row in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "accounts" not in tables:
+            return None
+        rows = {str(row["guid"]): dict(row) for row in cur.execute("SELECT guid, name, account_type, parent_guid FROM accounts")}
+
+        def full_name(guid: str, seen: set[str] | None = None) -> str:
+            seen = seen or set()
+            row = rows.get(guid)
+            if not row:
+                return guid
+            name = str(row.get("name") or "")
+            parent = str(row.get("parent_guid") or "")
+            if not parent or parent in seen or parent not in rows:
+                return name
+            parent_name = full_name(parent, seen | {guid})
+            if parent_name in {"Root Account", "Root", ""}:
+                return name
+            return parent_name + ":" + name
+
+        accounts = []
+        for guid, row in rows.items():
+            account_type = str(row.get("account_type") or "")
+            name = str(row.get("name") or "")
+            if not name:
+                continue
+            accounts.append({
+                "guid": guid,
+                "name": name,
+                "full_name": full_name(guid),
+                "account_type": account_type,
+            })
+        accounts.sort(key=lambda a: natural_key(str(a.get("full_name") or a.get("name") or "")))
+        return accounts
+    finally:
+        con.close()
+
+
+def scan_xml_accounts(book_path: Path) -> list[dict[str, Any]]:
+    try:
+        root = ET.fromstring(open_xml_bytes(book_path))
+    except Exception:
+        return []
+    rows: dict[str, dict[str, str]] = {}
+    for elem in root.iter():
+        if local_name(elem.tag) == "GncAccount":
+            guid = child_text(elem, "id") or child_text(elem, "guid")
+            name = child_text(elem, "name")
+            account_type = child_text(elem, "type")
+            parent = child_text(elem, "parent")
+            if guid and name:
+                rows[guid] = {"guid": guid, "name": name, "account_type": account_type, "parent_guid": parent}
+
+    def full_name(guid: str, seen: set[str] | None = None) -> str:
+        seen = seen or set()
+        row = rows.get(guid)
+        if not row:
+            return guid
+        name = row.get("name", "")
+        parent = row.get("parent_guid", "")
+        if not parent or parent in seen or parent not in rows:
+            return name
+        parent_name = full_name(parent, seen | {guid})
+        if parent_name in {"Root Account", "Root", ""}:
+            return name
+        return parent_name + ":" + name
+
+    accounts = [{"guid": guid, "name": row["name"], "full_name": full_name(guid), "account_type": row.get("account_type", "")} for guid, row in rows.items()]
+    accounts.sort(key=lambda a: natural_key(str(a.get("full_name") or a.get("name") or "")))
+    return accounts
+
+
+def scan_accounts(book_path: str | Path) -> list[dict[str, Any]]:
+    path = Path(book_path).expanduser()
+    sqlite_accounts = try_sqlite_accounts(path)
+    if sqlite_accounts is not None:
+        return sqlite_accounts
+    return scan_xml_accounts(path)
+
+
+def is_income_account(account: dict[str, Any]) -> bool:
+    return str(account.get("account_type") or "").upper() == "INCOME"
+
+
+def is_receivable_account(account: dict[str, Any]) -> bool:
+    return str(account.get("account_type") or "").upper() in {"RECEIVABLE", "A/RECEIVABLE"}
+
 def open_xml_bytes(book_path: Path) -> bytes:
     raw = book_path.read_bytes()
     if raw[:2] == b"\x1f\x8b":
@@ -255,6 +356,7 @@ def customers_to_json(customers: list[Customer]) -> list[dict[str, Any]]:
 
 def scan_book_json(args: argparse.Namespace) -> None:
     customers, invoice_ids = scan_book(args.book)
+    accounts = scan_accounts(args.book)
     active_count = sum(1 for c in customers if customer_is_active(c.active))
     inactive_count = len(customers) - active_count
     print_json(
@@ -267,6 +369,10 @@ def scan_book_json(args: argparse.Namespace) -> None:
             "invoice_count": len(invoice_ids),
             "next_invoice_id": suggest_next_invoice_id(invoice_ids, args.prefix or "", int(args.padding or 0)),
             "customers": customers_to_json(customers),
+            "account_count": len(accounts),
+            "accounts": accounts,
+            "income_accounts": [a for a in accounts if is_income_account(a)],
+            "receivable_accounts": [a for a in accounts if is_receivable_account(a)],
         }
     )
 
@@ -418,6 +524,61 @@ def yn(value: bool) -> str:
     return "Y" if bool(value) else "N"
 
 
+
+
+def normalize_date_format(fmt: str) -> str:
+    raw = str(fmt or "").strip()
+    compact = raw.lower().replace(" ", "")
+    mapping = {
+        "m/d/y": "%m/%d/%Y",
+        "mm/dd/yyyy": "%m/%d/%Y",
+        "m/d/yyyy": "%m/%d/%Y",
+        "%m/%d/%y": "%m/%d/%Y",
+        "%m/%d/%Y".lower(): "%m/%d/%Y",
+        "d/m/y": "%d/%m/%Y",
+        "dd/mm/yyyy": "%d/%m/%Y",
+        "d/m/yyyy": "%d/%m/%Y",
+        "%d/%m/%y": "%d/%m/%Y",
+        "%d/%m/%Y".lower(): "%d/%m/%Y",
+        "y-m-d": "%Y-%m-%d",
+        "yyyy-mm-dd": "%Y-%m-%d",
+        "%Y-%m-%d".lower(): "%Y-%m-%d",
+        "y/m/d": "%Y/%m/%d",
+        "yyyy/mm/dd": "%Y/%m/%d",
+        "d.m.y": "%d.%m.%Y",
+        "dd.mm.yyyy": "%d.%m.%Y",
+        "m-d-y": "%m-%d-%Y",
+        "mm-dd-yyyy": "%m-%d-%Y",
+        "d-m-y": "%d-%m-%Y",
+        "dd-mm-yyyy": "%d-%m-%Y",
+    }
+    if compact in mapping:
+        return mapping[compact]
+    # Translate common PHP date tokens to strftime tokens.
+    py = raw.replace("Y", "%Y").replace("y", "%y").replace("m", "%m").replace("n", "%m").replace("d", "%d").replace("j", "%d")
+    if "%" in py:
+        return py
+    return "%m/%d/%Y"
+
+
+def parse_form_date(value: Any) -> date | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%m-%d-%Y", "%d-%m-%Y", "%Y/%m/%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(raw[:10] if fmt == "%Y-%m-%d" else raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def import_date(value: Any, fmt: str) -> str:
+    dt = parse_form_date(value)
+    if dt is None:
+        return str(value or "")
+    return dt.strftime(normalize_date_format(fmt))
+
 def generate_json(args: argparse.Namespace) -> None:
     payload = json.load(sys.stdin)
     customers, invoice_ids = scan_book(args.book)
@@ -439,6 +600,7 @@ def generate_json(args: argparse.Namespace) -> None:
     taxable = bool(params.get("taxable", False))
     taxincluded = bool(params.get("taxincluded", False))
     accu_splits = bool(params.get("accu_splits", False))
+    csv_date_format = str(params.get("csv_date_format") or "m/d/Y")
 
     rows: list[list[str]] = []
     warnings: list[str] = []
@@ -453,11 +615,11 @@ def generate_json(args: argparse.Namespace) -> None:
 
         row = [
             invoice_id,
-            str(params.get("date_opened") or ""),
+            import_date(params.get("date_opened") or "", csv_date_format),
             customer_id,
             str(params.get("billing_id") or ""),
             str(params.get("notes") or ""),
-            str(params.get("entry_date") or params.get("date_opened") or ""),
+            import_date(params.get("entry_date") or params.get("date_opened") or "", csv_date_format),
             str(params.get("description") or ""),
             str(params.get("action") or "ea"),
             str(params.get("income_account") or ""),
@@ -469,8 +631,8 @@ def generate_json(args: argparse.Namespace) -> None:
             yn(taxable),
             yn(taxincluded),
             str(params.get("tax_table") or ""),
-            str(params.get("date_posted") or "") if posted else "",
-            str(params.get("due_date") or "") if posted else "",
+            import_date(params.get("date_posted") or "", csv_date_format) if posted else "",
+            import_date(params.get("due_date") or "", csv_date_format) if posted else "",
             str(params.get("ar_account") or "") if posted else "",
             str(params.get("memo_posted") or "") if posted else "",
             yn(accu_splits) if posted and accu_splits else "",
@@ -621,16 +783,10 @@ def report_metadata_json(args: argparse.Namespace) -> None:
         cur = con.cursor()
         if not table_exists(cur, "accounts"):
             raise RuntimeError("No accounts table found. Report generation currently requires a SQLite GnuCash book.")
-        full_names = account_full_names(con)
-        ar_accounts: list[dict[str, Any]] = []
-        for row in cur.execute("SELECT guid, name, account_type FROM accounts WHERE account_type IN ('RECEIVABLE', 'A/Receivable') ORDER BY name"):
-            ar_accounts.append({
-                "guid": row["guid"],
-                "name": row["name"],
-                "full_name": full_names.get(row["guid"], row["name"]),
-                "account_type": row["account_type"],
-            })
-        print_json({"ok": True, "ar_accounts": ar_accounts})
+        accounts = scan_accounts(path)
+        ar_accounts = [a for a in accounts if is_receivable_account(a)]
+        income_accounts = [a for a in accounts if is_income_account(a)]
+        print_json({"ok": True, "accounts": accounts, "ar_accounts": ar_accounts, "income_accounts": income_accounts})
     finally:
         con.close()
 

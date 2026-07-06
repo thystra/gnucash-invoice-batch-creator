@@ -13,6 +13,7 @@ $action = $_GET['action'] ?? 'home';
 try {
     match ($action) {
         'home' => page_home(),
+        'help' => page_help(),
         'setup_profile' => page_setup_profile(),
         'create_profile' => action_create_profile(),
         'config' => page_config(),
@@ -40,6 +41,38 @@ try {
     render_header('Error');
     echo '<div class="flash error">' . h($e->getMessage()) . '</div>';
     echo '<pre>' . h($e->getTraceAsString()) . '</pre>';
+    render_footer();
+}
+
+function page_help(): void
+{
+    render_header('Help / Instructions');
+    echo '<section class="card"><h2>Batch invoice workflow</h2>';
+    echo '<ol>';
+    echo '<li>Create or select the correct entity/profile.</li>';
+    echo '<li>Upload a copy of that entity\'s GnuCash book.</li>';
+    echo '<li>Open Batch Wizard and select customers from the scanned customer list, or load a saved group.</li>';
+    echo '<li>Choose invoice values. Account fields should be selected from the accounts scanned from the active book.</li>';
+    echo '<li>Generate and download the CSV.</li>';
+    echo '<li>Import the CSV into GnuCash, save the revised book, then upload the revised copy if you want batch customer reports.</li>';
+    echo '</ol></section>';
+
+    echo '<section class="card"><h2>GnuCash import steps</h2>';
+    echo '<ol>';
+    echo '<li>In GnuCash, open <strong>File → Import → Import Bills &amp; Invoices…</strong>.</li>';
+    echo '<li>Choose the generated CSV file.</li>';
+    echo '<li>Set import type to <strong>Invoice</strong>.</li>';
+    echo '<li>For CSV format, choose <strong>Comma separated with quotes</strong> when this tool is configured for comma output. Use the semicolon option only if Settings uses semicolon output.</li>';
+    echo '<li>Set the date format in this tool to match your GnuCash Preferences. Common values are <code>m/d/Y</code> for MM/DD/YYYY and <code>d/m/Y</code> for DD/MM/YYYY.</li>';
+    echo '<li>In the Afterwards step, choose <strong>Do not open imported documents in tabs</strong>. Opening a large batch of invoice tabs can make GnuCash very slow or unstable.</li>';
+    echo '<li>Review the preview carefully. If GnuCash reports an invalid date or invalid account, fix the tool settings/template and regenerate the CSV before importing again.</li>';
+    echo '</ol></section>';
+
+    echo '<section class="card"><h2>CSV column reference</h2>';
+    echo '<p>The generated file uses GnuCash\'s invoice import column order:</p>';
+    echo '<pre>id, date_opened, owner_id, billingid, notes, date, desc, action, account, quantity, price, disc_type, disc_how, discount, taxable, taxincluded, tax_table, date_posted, due_date, account_posted, memo_posted, accu_splits</pre>';
+    echo '<p class="help"><code>owner_id</code> is the customer ID from the GnuCash customers table. <code>account</code> must be the income account for the invoice line. <code>account_posted</code> must be an Accounts Receivable account when posting customer invoices.</p>';
+    echo '</section>';
     render_footer();
 }
 
@@ -114,14 +147,13 @@ function page_config(): void
     }
     field_text('python_bin', 'Python binary', (string)$cfg['python_bin'], 'Usually /usr/bin/python3.');
     field_text('chromium_bin', 'Chromium binary', (string)($cfg['chromium_bin'] ?? '/usr/bin/chromium'), 'Used to render customer report PDFs. Examples: /usr/bin/chromium, /usr/bin/chromium-browser, /usr/bin/google-chrome.');
-    field_text('default_income_account', 'Default income account', (string)$cfg['default_income_account'], 'Example: Income:Dues');
-    field_text('default_ar_account', 'Default A/R account', (string)$cfg['default_ar_account'], 'Example: Assets:Accounts Receivable');
+    render_default_account_fields($cfg);
     field_text('default_action', 'Default invoice action', (string)$cfg['default_action'], 'Common values: ea, hour, day, material.');
     field_text('default_tax_table', 'Default tax table', (string)$cfg['default_tax_table'], 'Leave blank for no tax table.');
     field_text('id_prefix', 'Invoice ID prefix', (string)$cfg['id_prefix'], 'Optional. Example: DUES-');
     field_number('id_padding', 'Invoice ID numeric padding', (int)$cfg['id_padding'], '0 preserves detected width or uses no padding.');
     field_text('csv_delimiter', 'CSV delimiter', (string)$cfg['csv_delimiter'], 'Use comma or semicolon.');
-    field_text('csv_date_format', 'Display date format', (string)$cfg['csv_date_format'], 'PHP date format used by the web form defaults. Generated CSV dates use ISO yyyy-mm-dd unless changed in future code.');
+    field_text('csv_date_format', 'GnuCash import date format', (string)$cfg['csv_date_format'], 'Must match GnuCash Preferences. Common values: m/d/Y for MM/DD/YYYY, d/m/Y for DD/MM/YYYY, Y-m-d for YYYY-MM-DD.');
     field_text('timezone', 'Timezone', (string)$cfg['timezone'], 'Example: America/New_York');
     echo '</div>';
     echo '<label class="check"><input type="checkbox" name="default_posted" value="1" ' . ((bool)$cfg['default_posted'] ? 'checked' : '') . '> Post invoices by default</label>';
@@ -242,7 +274,7 @@ function action_save_config(): never
         'id_prefix' => trim((string)($_POST['id_prefix'] ?? '')),
         'id_padding' => max(0, (int)($_POST['id_padding'] ?? 0)),
         'csv_delimiter' => in_array(($_POST['csv_delimiter'] ?? ','), [',', ';'], true) ? (string)$_POST['csv_delimiter'] : ',',
-        'csv_date_format' => trim((string)($_POST['csv_date_format'] ?? 'Y-m-d')),
+        'csv_date_format' => trim((string)($_POST['csv_date_format'] ?? 'm/d/Y')),
         'timezone' => trim((string)($_POST['timezone'] ?? 'America/New_York')),
     ];
     write_config($new);
@@ -396,6 +428,82 @@ function scan_book_for_wizard(string $book): array
     return run_python(['scan-book', '--book', $book, '--prefix', (string)app_config('id_prefix', ''), '--padding', (string)app_config('id_padding', 0)]);
 }
 
+
+function account_options_from_scan(array $scanJson, string $key): array
+{
+    $items = is_array($scanJson[$key] ?? null) ? $scanJson[$key] : [];
+    usort($items, fn($a, $b) => strnatcasecmp((string)($a['full_name'] ?? $a['name'] ?? ''), (string)($b['full_name'] ?? $b['name'] ?? '')));
+    return $items;
+}
+
+function render_account_select(string $name, string $label, string $value, array $accounts, string $help = ''): void
+{
+    if (!$accounts) {
+        field_text($name, $label, $value, $help . ' No matching accounts were detected in the active book; enter the full GnuCash account path manually.');
+        return;
+    }
+    $known = [];
+    foreach ($accounts as $account) {
+        $full = (string)($account['full_name'] ?? $account['name'] ?? '');
+        if ($full !== '') {
+            $known[$full] = true;
+        }
+    }
+    echo '<div><label for="' . h($name) . '">' . h($label) . '</label><select id="' . h($name) . '" name="' . h($name) . '">';
+    if ($value !== '' && !isset($known[$value])) {
+        echo '<option value="' . h($value) . '" selected>' . h($value) . ' (configured; not detected)</option>';
+    }
+    foreach ($accounts as $account) {
+        $full = (string)($account['full_name'] ?? $account['name'] ?? '');
+        if ($full === '') {
+            continue;
+        }
+        $type = (string)($account['account_type'] ?? '');
+        $selected = $full === $value ? ' selected' : '';
+        echo '<option value="' . h($full) . '"' . $selected . '>' . h($full) . ($type !== '' ? ' [' . h($type) . ']' : '') . '</option>';
+    }
+    echo '</select>';
+    if ($help !== '') {
+        echo '<div class="help">' . h($help) . '</div>';
+    }
+    echo '</div>';
+}
+
+function render_default_account_fields(array $cfg): void
+{
+    $book = current_book_path();
+    $scanJson = [];
+    if ($book !== '' && is_file($book)) {
+        $scan = scan_book_for_wizard($book);
+        if ($scan['ok'] && is_array($scan['json'])) {
+            $scanJson = $scan['json'];
+        }
+    }
+    render_account_select('default_income_account', 'Default income account', (string)$cfg['default_income_account'], account_options_from_scan($scanJson, 'income_accounts'), 'Used for invoice line items. Suggestions are scanned from the active book.');
+    render_account_select('default_ar_account', 'Default A/R account', (string)$cfg['default_ar_account'], account_options_from_scan($scanJson, 'receivable_accounts'), 'Used as account_posted for posted invoices. Suggestions are scanned from the active book.');
+}
+
+function render_saved_groups_input(array $groups, bool $open): void
+{
+    echo '<section class="card"><details' . ($open ? ' open' : '') . '><summary><strong>Saved groups and alternate input</strong></summary>';
+    echo '<p class="help">Saved groups are the fastest path for repeat monthly runs. Uploading a separate customer-ID file remains available as a fallback for external rosters, but is no longer required.</p>';
+    echo '<form method="post" enctype="multipart/form-data" action="?action=scan_upload">' . csrf_field();
+    if ($groups) {
+        echo '<label>Load saved group for this entity</label><select name="saved_group"><option value="">-- do not load a group --</option>';
+        foreach ($groups as $group) {
+            echo '<option value="' . h($group['slug']) . '">' . h($group['name']) . ' (' . h(count($group['data']['customer_ids'] ?? [])) . ' customers)</option>';
+        }
+        echo '</select>';
+    } else {
+        echo '<p>No saved groups exist for this entity yet. Select customers from the active book, then save the group in the invoice parameters step.</p>';
+    }
+    echo '<details><summary>Optional: upload a customer ID file instead</summary>';
+    echo '<label>Upload customer ID file</label><input type="file" name="customer_file" accept=".csv,.txt,.tsv,.xlsx">';
+    echo '<div class="help">CSV/text/XLSX. A recognized customer ID column is best, but exact ID matching is also attempted.</div>';
+    echo '</details>';
+    echo '<div class="actions"><button type="submit">Load saved group / scan uploaded file</button></div></form></details></section>';
+}
+
 function page_wizard(): void
 {
     $book = require_book_configured();
@@ -404,11 +512,17 @@ function page_wizard(): void
     echo '<p class="muted">Active entity: <strong>' . h($profile['name'] ?? '') . '</strong>. Active book copy: <code>' . h(basename($book)) . '</code>.</p>';
 
     $groups = list_named_json(profile_data_dir('groups'));
+    $hasSelection = !empty($_SESSION['batch_scan']);
     $showInactive = (string)($_GET['show_inactive'] ?? '') === '1';
+    $sortMode = in_array(($_GET['sort'] ?? 'id'), ['id', 'name'], true) ? (string)$_GET['sort'] : 'id';
     $bookScan = scan_book_for_wizard($book);
 
-    echo '<section class="card"><h2>1. Select customers from the active GnuCash book</h2>';
-    echo '<p class="help">The wizard now reads the <code>customers</code> table from the uploaded GnuCash book copy. Active customers are shown by default. Inactive customers are hidden unless you choose to display them.</p>';
+    if ($groups) {
+        render_saved_groups_input($groups, true);
+    }
+
+    echo '<section class="card"><details' . (!$hasSelection ? ' open' : '') . '><summary><strong>1. Select customers from the active GnuCash book</strong></summary>';
+    echo '<p class="help">The wizard reads the <code>customers</code> table from the uploaded GnuCash book copy. Active customers are shown by default. Inactive customers are hidden unless you choose to display them.</p>';
 
     if (!$bookScan['ok'] || !is_array($bookScan['json'])) {
         echo '<div class="flash error">Unable to scan customers from the active book.<pre>' . h(($bookScan['stderr'] ?? '') . "\n" . ($bookScan['stdout'] ?? '')) . '</pre></div>';
@@ -417,12 +531,22 @@ function page_wizard(): void
         $activeCount = (int)($bookScan['json']['active_customer_count'] ?? count(array_filter($customers, 'php_customer_is_active')));
         $inactiveCount = (int)($bookScan['json']['inactive_customer_count'] ?? max(0, count($customers) - $activeCount));
         $visible = array_values(array_filter($customers, fn($c) => $showInactive || php_customer_is_active($c)));
-        echo '<p><span class="badge">Total customers: ' . h(count($customers)) . '</span> <span class="badge">Active: ' . h($activeCount) . '</span> <span class="badge">Inactive: ' . h($inactiveCount) . '</span> <span class="badge">Next invoice: ' . h($bookScan['json']['next_invoice_id'] ?? '') . '</span></p>';
+        usort($visible, function ($a, $b) use ($sortMode) {
+            if ($sortMode === 'name') {
+                $cmp = strnatcasecmp((string)($a['name'] ?? ''), (string)($b['name'] ?? ''));
+                return $cmp !== 0 ? $cmp : strnatcasecmp((string)($a['id'] ?? ''), (string)($b['id'] ?? ''));
+            }
+            return strnatcasecmp((string)($a['id'] ?? ''), (string)($b['id'] ?? ''));
+        });
+        echo '<p><span class="badge">Total customers: ' . h(count($customers)) . '</span> <span class="badge">Active: ' . h($activeCount) . '</span> <span class="badge">Inactive: ' . h($inactiveCount) . '</span> <span class="badge">Next invoice: ' . h($bookScan['json']['next_invoice_id'] ?? '') . '</span> <span class="badge">Sort: ' . h($sortMode) . '</span></p>';
+        $inactiveParam = $showInactive ? '&show_inactive=1' : '';
         echo '<div class="actions">';
+        echo '<a class="button secondary" href="?action=wizard&sort=id' . h($inactiveParam) . '">Sort by ID</a>';
+        echo '<a class="button secondary" href="?action=wizard&sort=name' . h($inactiveParam) . '">Sort by name</a>';
         if ($showInactive) {
-            echo '<a class="button secondary" href="?action=wizard">Hide inactive customers</a>';
+            echo '<a class="button secondary" href="?action=wizard&sort=' . h($sortMode) . '">Hide inactive customers</a>';
         } else {
-            echo '<a class="button secondary" href="?action=wizard&show_inactive=1">Show inactive customers</a>';
+            echo '<a class="button secondary" href="?action=wizard&sort=' . h($sortMode) . '&show_inactive=1">Show inactive customers</a>';
         }
         echo '</div>';
 
@@ -442,25 +566,11 @@ function page_wizard(): void
             echo '<div class="actions"><button type="submit">Continue with selected customers</button></div></form>';
         }
     }
-    echo '</section>';
+    echo '</details></section>';
 
-    echo '<section class="card"><h2>Saved groups and alternate input</h2>';
-    echo '<p class="help">Saved groups are still available for repeat monthly runs. Uploading a separate customer-ID file remains available as a fallback for external rosters, but is no longer required.</p>';
-    echo '<form method="post" enctype="multipart/form-data" action="?action=scan_upload">' . csrf_field();
-    if ($groups) {
-        echo '<label>Load saved group for this entity</label><select name="saved_group"><option value="">-- do not load a group --</option>';
-        foreach ($groups as $group) {
-            echo '<option value="' . h($group['slug']) . '">' . h($group['name']) . ' (' . h(count($group['data']['customer_ids'] ?? [])) . ' customers)</option>';
-        }
-        echo '</select>';
-    } else {
-        echo '<p>No saved groups exist for this entity yet. Select customers above, then save the group in step 3.</p>';
+    if (!$groups) {
+        render_saved_groups_input($groups, false);
     }
-    echo '<details><summary>Optional: upload a customer ID file instead</summary>';
-    echo '<label>Upload customer ID file</label><input type="file" name="customer_file" accept=".csv,.txt,.tsv,.xlsx">';
-    echo '<div class="help">CSV/text/XLSX. A recognized customer ID column is best, but exact ID matching is also attempted.</div>';
-    echo '</details>';
-    echo '<div class="actions"><button type="submit">Load saved group / scan uploaded file</button></div></form></section>';
 
     if (!empty($_SESSION['batch_scan'])) {
         render_params_form($_SESSION['batch_scan']);
@@ -541,12 +651,15 @@ function render_params_form(array $scan): void
     $matched = $scan['matched'] ?? [];
     $unmatched = $scan['unmatched'] ?? [];
     $bookScan = run_python(['scan-book', '--book', $book, '--prefix', (string)app_config('id_prefix', ''), '--padding', (string)app_config('id_padding', 0)]);
-    $suggested = $bookScan['json']['next_invoice_id'] ?? '';
+    $scanJson = ($bookScan['ok'] && is_array($bookScan['json'])) ? $bookScan['json'] : [];
+    $suggested = $scanJson['next_invoice_id'] ?? '';
     $templates = list_named_json(profile_data_dir('templates'));
+    $incomeAccounts = account_options_from_scan($scanJson, 'income_accounts');
+    $receivableAccounts = account_options_from_scan($scanJson, 'receivable_accounts');
 
     echo '<section class="card"><h2>2. Review selected customers</h2>';
     echo '<p><span class="badge">Matched: ' . h(count($matched)) . '</span> <span class="badge">Unmatched: ' . h(count($unmatched)) . '</span></p>';
-    echo '<details open><summary>Selected customers</summary><table><tr><th>ID</th><th>Name</th><th>Status</th></tr>';
+    echo '<details><summary>Selected customers</summary><table><tr><th>ID</th><th>Name</th><th>Status</th></tr>';
     foreach ($matched as $customer) {
         $isActive = php_customer_is_active($customer);
         echo '<tr><td>' . h($customer['id'] ?? '') . '</td><td>' . h($customer['name'] ?? '') . '</td><td>' . ($isActive ? '<span class="badge">active</span>' : '<span class="badge bad">inactive</span>') . '</td></tr>';
@@ -566,6 +679,7 @@ function render_params_form(array $scan): void
     $today = date('Y-m-d');
 
     echo '<section class="card"><h2>3. Invoice parameters</h2>';
+    echo '<p class="help">Date fields use browser dates here, then the CSV generator formats them as <code>' . h((string)app_config('csv_date_format', 'm/d/Y')) . '</code> for GnuCash import.</p>';
     if ($templates) {
         echo '<form method="get" class="actions"><input type="hidden" name="action" value="wizard"><label style="margin:0">Load template <select name="template"><option value="">-- select --</option>';
         foreach ($templates as $template) {
@@ -584,8 +698,8 @@ function render_params_form(array $scan): void
     field_text('billing_id', 'Billing ID', (string)($params['billing_id'] ?? 'Monthly dues ' . date('Y-m')), 'Optional batch billing ID.');
     field_text('description', 'Line item description', (string)($params['description'] ?? 'Monthly dues'), 'Shown as the invoice line description.');
     field_text('action_name', 'Action', (string)($params['action'] ?? $cfg['default_action']), 'Example: ea');
-    field_text('income_account', 'Income account', (string)($params['income_account'] ?? $cfg['default_income_account']), 'Must match a GnuCash income account name.');
-    field_text('ar_account', 'A/R account', (string)($params['ar_account'] ?? $cfg['default_ar_account']), 'Used when posting invoices.');
+    render_account_select('income_account', 'Income account', (string)($params['income_account'] ?? $cfg['default_income_account']), $incomeAccounts, 'Must match an existing GnuCash income account. Suggestions are scanned from the active book.');
+    render_account_select('ar_account', 'A/R account', (string)($params['ar_account'] ?? $cfg['default_ar_account']), $receivableAccounts, 'Used as account_posted when posting invoices. Suggestions are scanned from the active book.');
     field_number('quantity', 'Quantity', (float)($params['quantity'] ?? 1), 'Usually 1.');
     field_number('price', 'Unit price', (float)($params['price'] ?? 0), 'Amount per customer.');
     field_number('discount', 'Discount', (float)($params['discount'] ?? 0), 'Normally 0.');
@@ -637,6 +751,7 @@ function action_generate(): never
         'taxincluded' => isset($_POST['taxincluded']),
         'accu_splits' => isset($_POST['accu_splits']),
         'csv_delimiter' => (string)app_config('csv_delimiter', ','),
+        'csv_date_format' => (string)app_config('csv_date_format', 'm/d/Y'),
     ];
 
     $saveGroup = trim((string)($_POST['save_group_name'] ?? ''));

@@ -23,6 +23,6 @@ return [
     'id_prefix' => '',
     'id_padding' => 0,
     'csv_delimiter' => ',',
-    'csv_date_format' => 'Y-m-d',
+    'csv_date_format' => 'm/d/Y',
     'timezone' => 'America/New_York',
 ];
