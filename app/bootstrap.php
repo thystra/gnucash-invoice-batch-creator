@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const APP_NAME = 'GnuCash Invoice Batch Creator';
-const APP_VERSION = '0.1.7';
+const APP_VERSION = '0.1.8';
 define('BASE_PATH', dirname(__DIR__));
 define('CONFIG_PATH', BASE_PATH . '/config/config.php');
 define('CONFIG_EXAMPLE_PATH', BASE_PATH . '/config/config.example.php');
@@ -636,6 +636,16 @@ function recursive_delete(string $path): void
     rmdir($path);
 }
 
+function app_asset(string $path): string
+{
+    $path = ltrim($path, '/');
+    if (defined('APP_ASSET_BASE')) {
+        $base = rtrim((string)APP_ASSET_BASE, '/');
+        return $base === '' ? $path : $base . '/' . $path;
+    }
+    return $path;
+}
+
 function render_header(string $title): void
 {
     $profiles = list_profiles();
@@ -644,7 +654,7 @@ function render_header(string $title): void
     $configured = $book !== '' && is_file($book);
     echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
     echo '<title>' . h($title) . ' - ' . h(APP_NAME) . '</title>';
-    echo '<link rel="stylesheet" href="assets/app.css">';
+    echo '<link rel="stylesheet" href="' . h(app_asset('assets/app.css')) . '">';
     echo '</head><body><header class="top"><div><a class="brand" href="?">' . h(APP_NAME) . '</a><span class="version">v' . h(APP_VERSION) . '</span>';
     if ($profile) {
         echo '<span class="entity">' . h($profile['name']) . '</span>';

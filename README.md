@@ -262,7 +262,7 @@ The report workflow is:
 5. Open **Reports**, select the same saved customer group, choose the date range and A/R accounts, and generate PDFs.
 6. Download the generated ZIP.
 
-The v0.1.7 report generator intentionally uses a tool-owned HTML template rendered by Chromium rather than trying to automate GnuCash's Scheme report engine for each customer. This is more reliable for bulk output and allows better pagination controls. The Settings page includes a Chromium sanity check and will detect `/snap/bin/chromium` when Ubuntu installs Chromium as a snap.
+The report generator intentionally uses a tool-owned HTML template rendered by Chromium rather than trying to automate GnuCash's Scheme report engine for each customer. This is more reliable for bulk output and allows better pagination controls. The Settings page includes a Chromium sanity check and will detect `/snap/bin/chromium` when Ubuntu installs Chromium as a snap.
 
 For brand continuity, each profile can store:
 
@@ -349,16 +349,16 @@ python3 bin/gnc_batch_invoice.py generate --book /path/to/book.gnucash --out /tm
 Initial commit suggestion:
 
 ```bash
-git add README.md LICENSE .gitignore .github/FUNDING.yml index.html app bin config/config.example.php public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
+git add README.md LICENSE .gitignore .github/FUNDING.yml index.html index.php app bin config/config.example.php config/nginx-local-example.conf public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
 
-git commit -m "v0.1.7 - Fix quantity export and Chromium detection"
+git commit -m "v0.1.8 - Add root entrypoint for local subdirectory installs"
 ```
 
 Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.
 
 ## Runtime ownership notes
 
-Patch scripts from v0.1.6 onward are designed not to reset existing `var/` and `config/` permissions. They also remind you to run `bin/setup-local-permissions.sh` if runtime checks fail. v0.1.7 also improves Chromium detection for snap-based Ubuntu installs.
+Patch scripts from v0.1.6 onward are designed not to reset existing `var/` and `config/` permissions. They also remind you to run `bin/setup-local-permissions.sh` if runtime checks fail. v0.1.7 also improved Chromium detection for snap-based Ubuntu installs.
 
 A web application cannot create files as `$USER` while PHP-FPM is running as `www-data`. To make generated CSV files owned by `alan`, the PHP-FPM worker for this app must run as `alan`. Use `bin/install-local-fpm-pool.sh` for that local/trusted deployment model.
 
@@ -366,3 +366,67 @@ A web application cannot create files as `$USER` while PHP-FPM is running as `ww
 ## License
 
 GPL-3.0-or-later by default. Change this before first public release if you want a different license.
+
+
+## Fixing “No input file specified” on a public_html/subdirectory install
+
+If a fresh clone works for static files but PHP shows **No input file specified**, the issue is usually nginx/PHP-FPM path mapping rather than `config/config.php`. PHP-FPM is being handed a `SCRIPT_FILENAME` that does not match the real file on disk.
+
+Version 0.1.8 adds a root-level `index.php` shim so a simple clone at:
+
+```text
+/home/$USER/public_html/invoices
+```
+
+can be opened as:
+
+```text
+http://localhost/invoices/index.php
+```
+
+or, through the root redirect:
+
+```text
+http://localhost/invoices/
+```
+
+The preferred production-style deployment is still to point nginx at `public/`, but the root shim is useful for local testing and simple `git pull` installs.
+
+Quick checks:
+
+```bash
+cd ~/public_html/invoices
+ls -l index.php public/index.php public/assets/app.css
+php -l index.php
+php -l public/index.php
+```
+
+If PHP syntax checks pass but the browser still reports **No input file specified**, update nginx so `SCRIPT_FILENAME` points at the real path. See `config/nginx-local-example.conf`. For a clone at `/home/alan/public_html/invoices`, the important part is:
+
+```nginx
+location /invoices/ {
+    alias /home/alan/public_html/invoices/;
+    index index.php;
+    try_files $uri $uri/ /invoices/index.php?$query_string;
+}
+
+location ~ ^/invoices/(.+\.php)$ {
+    alias /home/alan/public_html/invoices/$1;
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME /home/alan/public_html/invoices/$1;
+    fastcgi_param DOCUMENT_ROOT /home/alan/public_html/invoices;
+    fastcgi_pass unix:/run/php/gnucash-invoice-batch-creator.sock;
+}
+
+location ~ ^/invoices/(?:app|bin|config|data|var|\.git|\.github)/ {
+    deny all;
+}
+```
+
+Then reload services:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+sudo systemctl restart php8.5-fpm
+```
