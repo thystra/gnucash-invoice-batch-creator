@@ -1,11 +1,16 @@
 <?php
 /**
- * GnuCash Invoice Batch Creator local configuration example.
- *
- * Copy to config/config.php and edit through the web Configuration page.
+ * Local configuration defaults for GnuCash Invoice Batch Creator.
+ * Copy to config/config.php or edit through the web UI.
  */
 return [
+    // Active entity/profile slug. Created and managed from Settings.
+    'active_profile' => '',
+
+    // Legacy fallback path used only when no entity book is active.
+    // New installs should upload book copies under entity/profile storage.
     'gnucash_book_path' => '',
+
     'python_bin' => '/usr/bin/python3',
     'default_income_account' => 'Income:Dues',
     'default_ar_account' => 'Assets:Accounts Receivable',

@@ -38,6 +38,8 @@ var/groups/*
 !var/groups/.gitkeep
 var/templates/*
 !var/templates/.gitkeep
+var/profiles/*
+!var/profiles/.gitkeep
 var/cache/*
 var/log/*
 

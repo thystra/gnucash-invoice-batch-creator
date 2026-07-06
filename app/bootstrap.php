@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const APP_NAME = 'GnuCash Invoice Batch Creator';
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.1.1';
 define('BASE_PATH', dirname(__DIR__));
 define('CONFIG_PATH', BASE_PATH . '/config/config.php');
 define('CONFIG_EXAMPLE_PATH', BASE_PATH . '/config/config.example.php');
@@ -33,6 +33,20 @@ function app_config(?string $key = null, mixed $default = null): mixed
     return $config[$key] ?? $default;
 }
 
+function write_config(array $newConfig): void
+{
+    $php = "<?php\nreturn " . var_export($newConfig, true) . ";\n";
+    if (file_put_contents(CONFIG_PATH, $php, LOCK_EX) === false) {
+        throw new RuntimeException('Unable to write config/config.php. Check permissions.');
+    }
+}
+
+function update_config(array $changes): void
+{
+    $current = app_config();
+    write_config(array_replace($current, $changes));
+}
+
 function h(mixed $value): string
 {
     return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -45,7 +59,7 @@ function path_join(string ...$parts): string
 
 function ensure_runtime_dirs(): void
 {
-    foreach (['var/uploads', 'var/generated', 'var/groups', 'var/templates', 'var/cache', 'var/log', 'config'] as $dir) {
+    foreach (['var/uploads', 'var/generated', 'var/groups', 'var/templates', 'var/profiles', 'var/cache', 'var/log', 'config'] as $dir) {
         $path = BASE_PATH . '/' . $dir;
         if (!is_dir($path)) {
             mkdir($path, 0770, true);
@@ -116,6 +130,10 @@ function json_read_file(string $path, mixed $default = null): mixed
 
 function json_write_file(string $path, mixed $data): void
 {
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        mkdir($dir, 0770, true);
+    }
     $tmp = $path . '.tmp';
     $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
     if (file_put_contents($tmp, $json, LOCK_EX) === false) {
@@ -126,8 +144,9 @@ function json_write_file(string $path, mixed $data): void
 
 function list_named_json(string $dir): array
 {
+    $base = str_starts_with($dir, '/') ? $dir : BASE_PATH . '/' . $dir;
     $items = [];
-    foreach (glob(BASE_PATH . '/' . $dir . '/*.json') ?: [] as $path) {
+    foreach (glob($base . '/*.json') ?: [] as $path) {
         $data = json_read_file($path, []);
         $items[] = [
             'slug' => basename($path, '.json'),
@@ -182,20 +201,246 @@ function run_python(array $args, ?array $stdinJson = null): array
     ];
 }
 
+function profiles_root(): string
+{
+    return BASE_PATH . '/var/profiles';
+}
+
+function profile_dir(string $slug): string
+{
+    return profiles_root() . '/' . slugify($slug);
+}
+
+function profile_json_path(string $slug): string
+{
+    return profile_dir($slug) . '/profile.json';
+}
+
+function ensure_profile_dirs(string $slug): void
+{
+    foreach (['books', 'uploads', 'generated', 'groups', 'templates', 'cache', 'log'] as $dir) {
+        $path = profile_dir($slug) . '/' . $dir;
+        if (!is_dir($path)) {
+            mkdir($path, 0770, true);
+        }
+    }
+}
+
+function profile_data_dir(string $kind, ?string $slug = null): string
+{
+    $slug = $slug ?: (active_profile_slug() ?? '');
+    if ($slug === '') {
+        return BASE_PATH . '/var/' . $kind;
+    }
+    ensure_profile_dirs($slug);
+    return profile_dir($slug) . '/' . $kind;
+}
+
+function normalize_profile(array $profile, string $slug): array
+{
+    $profile['slug'] = $profile['slug'] ?? $slug;
+    $profile['name'] = trim((string)($profile['name'] ?? $slug)) ?: $slug;
+    $profile['created_at'] = $profile['created_at'] ?? date(DATE_ATOM);
+    $profile['updated_at'] = $profile['updated_at'] ?? $profile['created_at'];
+    $profile['books'] = is_array($profile['books'] ?? null) ? $profile['books'] : [];
+    $profile['active_book'] = (string)($profile['active_book'] ?? '');
+    return $profile;
+}
+
+function save_profile(array $profile): void
+{
+    $slug = slugify((string)($profile['slug'] ?? $profile['name'] ?? 'profile'));
+    ensure_profile_dirs($slug);
+    $profile['slug'] = $slug;
+    $profile['updated_at'] = date(DATE_ATOM);
+    json_write_file(profile_json_path($slug), $profile);
+}
+
+function get_profile(string $slug): ?array
+{
+    $slug = slugify($slug);
+    $path = profile_json_path($slug);
+    if (!is_file($path)) {
+        return null;
+    }
+    $profile = json_read_file($path, null);
+    return is_array($profile) ? normalize_profile($profile, $slug) : null;
+}
+
+function list_profiles(): array
+{
+    ensure_runtime_dirs();
+    $items = [];
+    foreach (glob(profiles_root() . '/*/profile.json') ?: [] as $path) {
+        $slug = basename(dirname($path));
+        $profile = json_read_file($path, []);
+        if (is_array($profile)) {
+            $items[] = normalize_profile($profile, $slug);
+        }
+    }
+    usort($items, fn($a, $b) => strnatcasecmp((string)$a['name'], (string)$b['name']));
+    return $items;
+}
+
+function active_profile_slug(): ?string
+{
+    $profiles = list_profiles();
+    if (!$profiles) {
+        return null;
+    }
+    $configured = slugify((string)app_config('active_profile', ''));
+    if ($configured !== '') {
+        foreach ($profiles as $profile) {
+            if (($profile['slug'] ?? '') === $configured) {
+                return $configured;
+            }
+        }
+    }
+    return (string)$profiles[0]['slug'];
+}
+
+function active_profile(): ?array
+{
+    $slug = active_profile_slug();
+    return $slug ? get_profile($slug) : null;
+}
+
+function book_entry_path(array $profile, string $file): string
+{
+    return profile_dir((string)$profile['slug']) . '/books/' . basename($file);
+}
+
+function active_book_path(?array $profile = null): string
+{
+    $profile = $profile ?: active_profile();
+    if (is_array($profile)) {
+        $active = (string)($profile['active_book'] ?? '');
+        if ($active !== '') {
+            $path = book_entry_path($profile, $active);
+            if (is_file($path)) {
+                return $path;
+            }
+        }
+        foreach (($profile['books'] ?? []) as $book) {
+            $file = (string)($book['file'] ?? '');
+            if ($file !== '') {
+                $path = book_entry_path($profile, $file);
+                if (is_file($path)) {
+                    return $path;
+                }
+            }
+        }
+    }
+    $legacy = (string)app_config('gnucash_book_path', '');
+    return is_file($legacy) ? $legacy : '';
+}
+
+function current_book_path(): string
+{
+    return active_book_path(active_profile());
+}
+
+function require_profile_configured(): array
+{
+    $profile = active_profile();
+    if (!$profile) {
+        flash('warn', 'Create your first entity/profile before creating invoices.');
+        redirect_to('setup_profile');
+    }
+    return $profile;
+}
+
+function require_book_configured(): string
+{
+    require_profile_configured();
+    $book = current_book_path();
+    if ($book === '' || !is_file($book)) {
+        flash('error', 'Upload or select a readable GnuCash book copy for this entity first.');
+        redirect_to('config');
+    }
+    return $book;
+}
+
+function allowed_book_extension(string $name): bool
+{
+    $lower = strtolower($name);
+    foreach (['.gnucash', '.sqlite', '.sqlite3', '.db', '.db3', '.xml', '.xac', '.gz'] as $suffix) {
+        if (str_ends_with($lower, $suffix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function store_uploaded_book(string $field, array $profile): array
+{
+    if (empty($_FILES[$field]) || ($_FILES[$field]['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        throw new RuntimeException('Upload a GnuCash book copy.');
+    }
+    $original = basename((string)$_FILES[$field]['name']);
+    if (!allowed_book_extension($original)) {
+        throw new RuntimeException('Unsupported GnuCash book upload extension. Use .gnucash, .sqlite, .sqlite3, .db, .xml, .xac, or .gz.');
+    }
+    ensure_profile_dirs((string)$profile['slug']);
+    $stored = date('Ymd-His') . '-' . bin2hex(random_bytes(4)) . '-' . slugify($original);
+    $target = profile_dir((string)$profile['slug']) . '/books/' . $stored;
+    if (!move_uploaded_file((string)$_FILES[$field]['tmp_name'], $target)) {
+        throw new RuntimeException('Unable to store uploaded GnuCash book.');
+    }
+    chmod($target, 0660);
+    return [
+        'file' => $stored,
+        'original_name' => $original,
+        'title' => preg_replace('/\.(gnucash|sqlite3?|db3?|xml|xac|gz)$/i', '', $original) ?: $original,
+        'uploaded_at' => date(DATE_ATOM),
+        'size_bytes' => filesize($target) ?: 0,
+    ];
+}
+
+function recursive_delete(string $path): void
+{
+    if (!file_exists($path)) {
+        return;
+    }
+    if (is_file($path) || is_link($path)) {
+        unlink($path);
+        return;
+    }
+    $items = scandir($path);
+    if ($items === false) {
+        throw new RuntimeException('Unable to read directory for deletion: ' . $path);
+    }
+    foreach ($items as $item) {
+        if ($item === '.' || $item === '..') {
+            continue;
+        }
+        recursive_delete($path . '/' . $item);
+    }
+    rmdir($path);
+}
+
 function render_header(string $title): void
 {
-    $configured = app_config('gnucash_book_path') && is_file((string)app_config('gnucash_book_path'));
+    $profiles = list_profiles();
+    $profile = active_profile();
+    $book = current_book_path();
+    $configured = $book !== '' && is_file($book);
     echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
     echo '<title>' . h($title) . ' - ' . h(APP_NAME) . '</title>';
     echo '<link rel="stylesheet" href="assets/app.css">';
-    echo '</head><body><header class="top"><div><a class="brand" href="?">' . h(APP_NAME) . '</a><span class="version">v' . h(APP_VERSION) . '</span></div>';
-    echo '<nav><a href="?">Home</a><a href="?action=wizard">Batch Wizard</a><a href="?action=groups">Groups</a><a href="?action=templates">Templates</a><a href="?action=config">Configuration</a></nav></header>';
+    echo '</head><body><header class="top"><div><a class="brand" href="?">' . h(APP_NAME) . '</a><span class="version">v' . h(APP_VERSION) . '</span>';
+    if ($profile) {
+        echo '<span class="entity">' . h($profile['name']) . '</span>';
+    }
+    echo '</div><nav><a href="?">Home</a><a href="?action=wizard">Batch Wizard</a><a href="?action=groups">Groups</a><a href="?action=templates">Templates</a><a href="?action=config">Settings</a></nav></header>';
     echo '<main class="wrap">';
     foreach (pop_flashes() as $message) {
         echo '<div class="flash ' . h($message['type']) . '">' . h($message['message']) . '</div>';
     }
-    if (!$configured) {
-        echo '<div class="flash warn">Configure a readable GnuCash book path before generating invoices.</div>';
+    if (!$profiles) {
+        echo '<div class="flash warn">No entity/profile has been configured yet. Create the first entity to continue.</div>';
+    } elseif (!$configured) {
+        echo '<div class="flash warn">Upload or select a readable GnuCash book copy for the active entity before generating invoices.</div>';
     }
     echo '<h1>' . h($title) . '</h1>';
 }
@@ -203,15 +448,6 @@ function render_header(string $title): void
 function render_footer(): void
 {
     echo '</main><footer class="foot">GPL-3.0-or-later. Use on localhost or a trusted internal network only.</footer></body></html>';
-}
-
-function require_book_configured(): void
-{
-    $book = (string)app_config('gnucash_book_path', '');
-    if ($book === '' || !is_file($book)) {
-        flash('error', 'Please configure a readable GnuCash book path first.');
-        redirect_to('config');
-    }
 }
 
 ensure_runtime_dirs();

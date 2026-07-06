@@ -54,3 +54,8 @@ th { color: var(--muted); font-size: 0.9rem; }
 .flash.ok { border-color: var(--ok); color: var(--ok); }
 pre { white-space: pre-wrap; background: var(--panel); border: 1px solid var(--line); padding: 1rem; border-radius: 10px; overflow: auto; }
 .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 0.15rem 0.5rem; color: var(--muted); font-size: 0.85rem; }
+.entity { margin-left: 0.75rem; display: inline-block; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0.1rem 0.5rem; font-size: 0.85rem; }
+.inline { display: inline-block; margin: 0 0.25rem 0.25rem 0; }
+.inline button { padding: 0.35rem 0.55rem; font-size: 0.9rem; }
+.muted { color: var(--muted); }
+code { background: rgba(127,127,127,.12); border-radius: 5px; padding: 0.08rem 0.25rem; }

@@ -2,29 +2,32 @@
 
 A local/internal-network web application for creating batch customer invoice CSV files that can be imported into GnuCash.
 
-The initial goal is monthly or recurring invoices/dues: upload a file containing GnuCash customer IDs, choose shared invoice parameters once, preview the batch, optionally save the customer group and/or invoice template, then generate a GnuCash invoice import CSV.
+The initial goal is monthly or recurring invoices/dues: create an entity/profile, upload a copy of that entity's GnuCash book, upload or reuse a customer list, choose shared invoice parameters once, preview the batch, optionally save the customer group and/or invoice template, then generate a GnuCash invoice import CSV.
 
 Repository: <https://github.com/thystra/gnucash-invoice-batch-creator>
 
 ## What this tool does
 
-- Scans a GnuCash book for customers and existing invoice IDs.
+- Stores multiple entities/profiles, such as `ORG A`, `ORG B`, or `ENTITY A LLC`.
+- Stores multiple uploaded GnuCash book copies per entity/profile.
+- Scans the active uploaded GnuCash book copy for customers and existing invoice IDs.
 - Suggests the next available invoice number.
 - Lets the user upload a CSV, text, or optionally XLSX file containing customer IDs.
 - Matches uploaded IDs against GnuCash customers.
 - Walks the user through a local web wizard to create batch invoices.
-- Saves reusable customer groups under `var/groups/`.
-- Saves reusable invoice templates under `var/templates/`.
-- Generates a GnuCash invoice import CSV under `var/generated/`.
+- Saves reusable customer groups under each entity/profile.
+- Saves reusable invoice templates under each entity/profile.
+- Generates a GnuCash invoice import CSV under each entity/profile.
 - Supports posted invoices by default, with a configuration option to generate unposted invoices.
+- Includes a root `index.html` redirect for convenience when browsing the repo directory directly.
 
 ## Important safety notes
 
-Run this on localhost or a trusted internal network only. This tool reads customer data from your GnuCash book and temporarily stores uploaded files and generated CSV files.
+Run this on localhost or a trusted internal network only. This tool reads customer data from your GnuCash book copies and temporarily stores uploaded files and generated CSV files.
 
-Do not point the web server at the repository root. Point NGINX at the `public/` directory only.
+Do not point a public web server at this repository. The preferred NGINX root is still the `public/` directory. The root `index.html` is only a convenience redirect for local use; it is not a substitute for keeping `config/`, `var/`, and source files out of the web root.
 
-Make a copy of your GnuCash file for testing before importing generated CSV files into your live book.
+Upload a copy of your GnuCash file for testing before importing generated CSV files into your live book.
 
 ## GnuCash import behavior
 
@@ -59,7 +62,7 @@ sudo apt update
 sudo apt install nginx php8.5-fpm php8.5-cli php8.5-sqlite3 python3 python3-openpyxl unzip git
 ```
 
-`python3-openpyxl` is optional but enables XLSX uploads. CSV and plain text uploads work without it.
+`python3-openpyxl` is optional but enables XLSX customer-list uploads. CSV and plain text uploads work without it.
 
 Check PHP modules:
 
@@ -85,8 +88,8 @@ git clone https://github.com/thystra/gnucash-invoice-batch-creator.git .
 Create writable runtime directories:
 
 ```bash
-mkdir -p var/uploads var/generated var/groups var/templates var/cache var/log config
-chmod 700 var var/uploads var/generated var/groups var/templates var/cache var/log config
+mkdir -p var/uploads var/generated var/groups var/templates var/profiles var/cache var/log config
+chmod 700 var var/uploads var/generated var/groups var/templates var/profiles var/cache var/log config
 ```
 
 If PHP-FPM runs as `www-data`, grant write access to runtime directories. One simple local-dev option is:
@@ -97,6 +100,24 @@ sudo chmod -R 770 var config
 ```
 
 For a single-user local workstation setup, you may instead run a dedicated PHP-FPM pool as your user and avoid giving `www-data` access to private files.
+
+## Profile/entity storage layout
+
+Each entity/profile is stored under:
+
+```text
+var/profiles/<profile-slug>/
+  profile.json
+  books/
+  uploads/
+  generated/
+  groups/
+  templates/
+```
+
+This keeps ORG A's uploaded book copies, groups, templates, uploads, and generated CSVs separate from ORG B's.
+
+The legacy top-level `var/uploads`, `var/generated`, `var/groups`, and `var/templates` directories remain for early development compatibility, but new wizard data is profile-specific.
 
 ## NGINX example
 
@@ -110,7 +131,7 @@ server {
     root /home/alan/public_html/gnucash-invoice-batch-creator/public;
     index index.php;
 
-    client_max_body_size 20M;
+    client_max_body_size 100M;
 
     location / {
         try_files $uri /index.php?$query_string;
@@ -136,17 +157,28 @@ sudo systemctl reload nginx
 
 For LAN use, bind to your LAN IP instead of `127.0.0.1`, and firewall it to trusted machines only.
 
-## Configuration
+## First-run setup
 
-Open the app in a browser and go to `Configuration`.
+Open the app in a browser. If there are no profiles, the app opens the first-entity setup wizard.
 
-Minimum required values:
+The first-run wizard asks for:
 
-- GnuCash book path: path to a readable test or live book, for example `/home/alan/Books/example.gnucash`
-- Python binary: usually `/usr/bin/python3`
-- Income account: for example `Income:Dues`
-- Accounts receivable account: for example `Assets:Accounts Receivable`
-- Posted by default: enabled unless you want imported invoices left unposted
+- Entity/profile name, such as `ORG A`
+- An initial GnuCash book copy upload
+
+After creating the profile, the app activates it and sends you to the batch wizard.
+
+## Settings page
+
+The Settings page lets you:
+
+- Switch the active entity/profile.
+- Create additional entities/profiles.
+- Upload additional GnuCash book copies for the active entity.
+- Choose which uploaded book copy is active.
+- Delete stored book copies.
+- Delete an entire entity/profile and its stored data.
+- Configure global defaults such as Python path, income account, A/R account, invoice ID prefix, posting default, tax defaults, and timezone.
 
 The app writes local settings to `config/config.php`, which is intentionally ignored by git.
 
@@ -159,7 +191,14 @@ Supported customer-ID upload formats:
 - Plain text, one customer ID per line
 - XLSX if `python3-openpyxl` is installed
 
-Only customer IDs that exist in the GnuCash book are included in the generated CSV. Unmatched IDs are shown in the preview.
+Only customer IDs that exist in the active GnuCash book copy are included in the generated CSV. Unmatched IDs are shown in the preview.
+
+Supported GnuCash book-copy upload extensions:
+
+- `.gnucash`
+- `.sqlite`, `.sqlite3`
+- `.db`, `.db3`
+- `.xml`, `.xac`, `.gz`
 
 ## Generated CSV columns
 
@@ -193,24 +232,23 @@ python3 bin/gnc_batch_invoice.py generate --book /path/to/book.gnucash --out /tm
 
 ## Suggested first test
 
-1. Copy your GnuCash book to a test file.
-2. Configure this app to read the test file.
-3. Upload a small customer-ID list with two or three customers.
-4. Generate the invoice CSV.
-5. Import it into the test GnuCash file as invoices.
-6. Verify invoice IDs, customers, dates, accounts, posting state, and amounts.
+1. Create an entity/profile from a copy of your GnuCash book.
+2. Upload a small customer-ID list with two or three customers.
+3. Generate the invoice CSV.
+4. Import it into a test GnuCash file as invoices.
+5. Verify invoice IDs, customers, dates, accounts, posting state, and amounts.
 
 ## Git workflow
 
 Initial commit suggestion:
 
 ```bash
-git add README.md LICENSE .gitignore .github/FUNDING.yml app bin config public data var
+git add README.md LICENSE .gitignore .github/FUNDING.yml index.html app bin config/config.example.php public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
 
-git commit -m "v0.1.0 - Initial GnuCash invoice batch creator scaffold"
+git commit -m "v0.1.1 - Add entity profiles and uploaded book storage"
 ```
 
-Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, or generated CSVs are staged.
+Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.
 
 ## License
 
