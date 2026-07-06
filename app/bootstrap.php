@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const APP_NAME = 'GnuCash Invoice Batch Creator';
-const APP_VERSION = '0.1.8';
+const APP_VERSION = '0.1.9';
 define('BASE_PATH', dirname(__DIR__));
 define('CONFIG_PATH', BASE_PATH . '/config/config.php');
 define('CONFIG_EXAMPLE_PATH', BASE_PATH . '/config/config.example.php');
@@ -85,6 +85,39 @@ function runtime_identity(): array
     ];
 }
 
+
+function path_within_open_basedir(string $path, string $openBasedir): bool
+{
+    if (trim($openBasedir) === '') {
+        return true;
+    }
+    $realPath = realpath($path) ?: $path;
+    foreach (explode(PATH_SEPARATOR, $openBasedir) as $allowed) {
+        $allowed = trim($allowed);
+        if ($allowed === '') {
+            continue;
+        }
+        $realAllowed = realpath($allowed) ?: $allowed;
+        $realAllowed = rtrim($realAllowed, DIRECTORY_SEPARATOR);
+        if ($realPath === $realAllowed || str_starts_with($realPath, $realAllowed . DIRECTORY_SEPARATOR)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function open_basedir_status(): array
+{
+    $openBasedir = (string)ini_get('open_basedir');
+    return [
+        'value' => $openBasedir,
+        'restricted' => trim($openBasedir) !== '',
+        'base_path_allowed' => path_within_open_basedir(BASE_PATH, $openBasedir),
+        'config_allowed' => path_within_open_basedir(CONFIG_PATH, $openBasedir),
+        'var_allowed' => path_within_open_basedir(BASE_PATH . '/var', $openBasedir),
+        'snap_bin_allowed' => trim($openBasedir) === '' || path_within_open_basedir('/snap/bin', $openBasedir),
+    ];
+}
 
 function chromium_candidates(?string $configured = null): array
 {

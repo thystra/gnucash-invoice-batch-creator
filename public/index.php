@@ -1139,10 +1139,17 @@ function render_runtime_checks_full(): void
 {
     echo '<section class="card"><h2>Runtime checks</h2>';
     $identity = runtime_identity();
-    echo '<p class="help">Uploads and generated reports require the PHP-FPM user to write to <code>config/</code> and <code>var/</code>. The directory should usually be group-owned by <code>publicweb</code> with setgid/default ACLs.</p>';
+    echo '<p class="help">Uploads and generated reports require the PHP-FPM user to write to <code>config/</code> and <code>var/</code>. The directory should usually be group-owned by <code>publicweb</code> with setgid/default ACLs. If PHP cannot open <code>index.php</code>, check the PHP-FPM <code>open_basedir</code> path for this pool.</p>';
     echo '<table><tr><th>Runtime identity</th><th>User</th><th>Group</th></tr>';
     echo '<tr><td>PHP effective process</td><td><code>' . h($identity['effective_user']) . '</code></td><td><code>' . h($identity['effective_group']) . '</code></td></tr>';
     echo '<tr><td>Application directory owner</td><td><code>' . h($identity['app_owner']) . '</code></td><td><code>' . h($identity['app_group']) . '</code></td></tr>';
+    echo '</table>';
+    $basedir = open_basedir_status();
+    echo '<table><tr><th>PHP open_basedir</th><th>Status</th></tr>';
+    echo '<tr><td><code>' . h($basedir['value'] !== '' ? $basedir['value'] : '(not restricted)') . '</code></td><td>' . (!empty($basedir['base_path_allowed']) ? '<span class="badge">app root allowed</span>' : '<span class="badge bad">app root blocked</span>') . '</td></tr>';
+    echo '<tr><td><code>' . h(BASE_PATH) . '</code></td><td>' . (!empty($basedir['base_path_allowed']) ? 'allowed' : 'blocked') . '</td></tr>';
+    echo '<tr><td><code>' . h(BASE_PATH . '/var') . '</code></td><td>' . (!empty($basedir['var_allowed']) ? 'allowed' : 'blocked') . '</td></tr>';
+    echo '<tr><td><code>/snap/bin</code></td><td>' . (!empty($basedir['snap_bin_allowed']) ? 'allowed or unrestricted' : 'not allowed; Chromium snap detection may fail') . '</td></tr>';
     echo '</table>';
     if (($identity['effective_user'] ?? '') !== ($identity['app_owner'] ?? '')) {
         echo '<div class="flash warn"><strong>Ownership note:</strong> Generated CSV/PDF files are created by the PHP-FPM process user, currently <code>' . h($identity['effective_user']) . '</code>. ACLs can make them writable by your shell user, but they cannot make new files owned by your shell user. For files to be owned by <code>' . h($identity['app_owner']) . '</code>, run this app in a dedicated local PHP-FPM pool as that user.</div>';
@@ -1153,10 +1160,10 @@ function render_runtime_checks_full(): void
         echo '<tr><td><code>' . h($check['path']) . '</code><br><span class="muted">' . h($check['label']) . '</span></td><td>' . h(!empty($check['exists']) ? 'yes' : 'no') . '</td><td>' . h(!empty($check['readable']) ? 'yes' : 'no') . '</td><td>' . ($ok ? '<span class="badge">yes</span>' : '<span class="badge bad">no</span>') . '</td></tr>';
     }
     echo '</table>';
-    echo '<details open><summary>Suggested local repair commands</summary><pre>cd ~/public_html/gnucash-invoice-batch-creator
+    echo '<details open><summary>Suggested local repair commands</summary><pre>cd /path/to/this/clone
 bash bin/setup-local-permissions.sh</pre><p class="help">This reclaims existing <code>www-data</code>-owned runtime files for your user, restores setgid/default ACLs, and keeps <code>publicweb</code> group write access.</p></details>';
-    echo '<details><summary>Make generated files owned by your shell user</summary><pre>cd ~/public_html/gnucash-invoice-batch-creator
-sudo bash bin/install-local-fpm-pool.sh alan publicweb</pre><p class="help">Then update the nginx location for this app to use <code>/run/php/gnucash-invoice-batch-creator.sock</code>. See <code>config/nginx-local-example.conf</code>.</p></details>';
+    echo '<details><summary>Make generated files owned by your shell user</summary><pre>cd /path/to/this/clone
+sudo bash bin/install-local-fpm-pool.sh alan publicweb 8.5 "$(pwd)"</pre><p class="help">This writes the PHP-FPM <code>open_basedir</code> for the current clone path. Then update the nginx location for this app to use <code>/run/php/gnucash-invoice-batch-creator.sock</code>. See <code>config/nginx-local-example.conf</code>.</p></details>';
     echo '</section>';
 }
 

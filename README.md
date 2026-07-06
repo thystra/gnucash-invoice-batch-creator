@@ -351,7 +351,7 @@ Initial commit suggestion:
 ```bash
 git add README.md LICENSE .gitignore .github/FUNDING.yml index.html index.php app bin config/config.example.php config/nginx-local-example.conf public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
 
-git commit -m "v0.1.8 - Add root entrypoint for local subdirectory installs"
+git commit -m "v0.1.9 - Fix PHP-FPM open_basedir for alternate clone paths"
 ```
 
 Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.
@@ -363,6 +363,40 @@ Patch scripts from v0.1.6 onward are designed not to reset existing `var/` and `
 A web application cannot create files as `$USER` while PHP-FPM is running as `www-data`. To make generated CSV files owned by `alan`, the PHP-FPM worker for this app must run as `alan`. Use `bin/install-local-fpm-pool.sh` for that local/trusted deployment model.
 
 
+
+
+### Fixing `open_basedir restriction in effect` after cloning to another directory
+
+If nginx shows **No input file specified** and the error log contains a message like:
+
+```text
+open_basedir restriction in effect. File(/home/alan/public_html/invoices/index.php) is not within the allowed path(s): (/home/alan/public_html/gnucash-invoice-batch-creator:/tmp:/usr/bin:/run/php)
+```
+
+then the PHP-FPM pool is still restricted to the old clone path. Regenerate the local pool from inside the new clone, explicitly passing the current directory:
+
+```bash
+cd /home/alan/public_html/invoices
+sudo bash bin/install-local-fpm-pool.sh alan publicweb 8.5 "$(pwd)"
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+For a quick manual repair, edit `/etc/php/8.5/fpm/pool.d/gnucash-invoice-batch-creator.conf` and make the first path in `open_basedir` match the actual clone path:
+
+```ini
+php_admin_value[open_basedir] = /home/alan/public_html/invoices:/tmp:/usr/bin:/bin:/snap/bin:/var/lib/snapd/snap/bin:/run/php
+```
+
+Then restart PHP-FPM and reload nginx:
+
+```bash
+sudo systemctl restart php8.5-fpm
+sudo systemctl reload nginx
+```
+
+The `/snap/bin` entries are included so the Settings page can detect Ubuntu's snap Chromium path.
+
 ## License
 
 GPL-3.0-or-later by default. Change this before first public release if you want a different license.
@@ -372,7 +406,7 @@ GPL-3.0-or-later by default. Change this before first public release if you want
 
 If a fresh clone works for static files but PHP shows **No input file specified**, the issue is usually nginx/PHP-FPM path mapping rather than `config/config.php`. PHP-FPM is being handed a `SCRIPT_FILENAME` that does not match the real file on disk.
 
-Version 0.1.8 adds a root-level `index.php` shim so a simple clone at:
+Version 0.1.8 added a root-level `index.php` shim so a simple clone at:
 
 ```text
 /home/$USER/public_html/invoices

@@ -5,12 +5,21 @@ APP_USER="${1:-${SUDO_USER:-${USER}}}"
 APP_GROUP="${2:-publicweb}"
 PHP_VERSION="${3:-8.5}"
 POOL_NAME="gnucash-invoice-batch-creator"
-REPO="${4:-/home/$APP_USER/public_html/gnucash-invoice-batch-creator}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_REPO="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+REPO="${4:-$SCRIPT_REPO}"
+REPO="$(cd "$REPO" && pwd -P)"
 POOL_FILE="/etc/php/$PHP_VERSION/fpm/pool.d/$POOL_NAME.conf"
 SOCKET="/run/php/$POOL_NAME.sock"
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Run with sudo: sudo bash bin/install-local-fpm-pool.sh $APP_USER $APP_GROUP" >&2
+  echo "Run with sudo: sudo bash bin/install-local-fpm-pool.sh $APP_USER $APP_GROUP $PHP_VERSION \"$(pwd)\"" >&2
+  exit 1
+fi
+
+if [[ ! -f "$REPO/app/bootstrap.php" || ! -f "$REPO/public/index.php" ]]; then
+  echo "This does not look like the gnucash-invoice-batch-creator repo: $REPO" >&2
+  echo "Pass the real clone path as the fourth argument, e.g.: sudo bash bin/install-local-fpm-pool.sh $APP_USER $APP_GROUP $PHP_VERSION /home/$APP_USER/public_html/invoices" >&2
   exit 1
 fi
 
@@ -34,7 +43,11 @@ find "$REPO/var" "$REPO/config" -type f -exec chmod 0660 {} +
 setfacl -R -m "u:$APP_USER:rwx,g:$APP_GROUP:rwx" "$REPO/var" "$REPO/config"
 setfacl -R -d -m "u:$APP_USER:rwx,g:$APP_GROUP:rwx" "$REPO/var" "$REPO/config"
 
-cat > "$POOL_FILE" <<EOF
+# Keep open_basedir bound to this specific clone, not a hard-coded project path.
+# /snap/bin is included so the Settings page can detect snap Chromium on Ubuntu.
+OPEN_BASEDIR="$REPO:/tmp:/usr/bin:/bin:/snap/bin:/var/lib/snapd/snap/bin:/run/php"
+
+cat > "$POOL_FILE" <<EOFPOOL
 [$POOL_NAME]
 user = $APP_USER
 group = $APP_GROUP
@@ -51,7 +64,7 @@ pm.min_spare_servers = 1
 pm.max_spare_servers = 2
 pm.max_requests = 300
 
-php_admin_value[open_basedir] = $REPO:/tmp:/usr/bin:/run/php
+php_admin_value[open_basedir] = $OPEN_BASEDIR
 php_admin_value[upload_tmp_dir] = $REPO/var/tmp
 php_admin_value[session.save_path] = $REPO/var/sessions
 php_admin_value[upload_max_filesize] = 512M
@@ -59,7 +72,7 @@ php_admin_value[post_max_size] = 600M
 php_admin_value[max_execution_time] = 300
 php_admin_value[max_input_time] = 300
 php_admin_value[memory_limit] = 512M
-EOF
+EOFPOOL
 
 # Make sure nginx can connect to the socket by group if it is not www-data.
 for web_user in www-data nginx; do
@@ -71,6 +84,8 @@ done
 systemctl restart "php$PHP_VERSION-fpm"
 
 echo "Installed PHP-FPM pool: $POOL_FILE"
+echo "App root: $REPO"
+echo "open_basedir: $OPEN_BASEDIR"
 echo "Socket: $SOCKET"
 echo "Update nginx for this app to use: fastcgi_pass unix:$SOCKET;"
 echo "Then run: sudo systemctl reload nginx"
