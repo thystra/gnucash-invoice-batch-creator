@@ -555,6 +555,27 @@ def money_string(value: Any, default: str = "0") -> str:
     return format(dec.quantize(Decimal("0.01")), "f")
 
 
+
+def quantity_string(value: Any, default: str = "1") -> str:
+    """Return an explicit decimal quantity string with at least one digit.
+
+    Some GnuCash import/date/number preference combinations can interpret an
+    integer-looking quantity such as 1 as 0.01. Exporting 1.0 makes the decimal
+    point explicit while still allowing fractional quantities such as 1.5.
+    """
+    try:
+        dec = Decimal(str(value).strip() or default)
+    except (InvalidOperation, ValueError):
+        dec = Decimal(default)
+    s = format(dec, "f")
+    if "." not in s:
+        return s + ".0"
+    whole, frac = s.split(".", 1)
+    frac = frac.rstrip("0")
+    if frac == "":
+        frac = "0"
+    return whole + "." + frac
+
 def yn(value: bool) -> str:
     return "Y" if bool(value) else "N"
 
@@ -658,7 +679,7 @@ def generate_json(args: argparse.Namespace) -> None:
             str(params.get("description") or ""),
             str(params.get("action") or "ea"),
             str(params.get("income_account") or ""),
-            decimal_string(params.get("quantity", "1"), "1"),
+            quantity_string(params.get("quantity", "1"), "1"),
             money_string(params.get("price", "0"), "0"),
             "%" if decimal_string(params.get("discount", "0"), "0") != "0" else "",
             "=" if decimal_string(params.get("discount", "0"), "0") != "0" else "",
@@ -1069,13 +1090,48 @@ def safe_filename(value: str) -> str:
     return clean.strip("-._") or "customer"
 
 
+def chromium_candidates(configured: str = "") -> list[str]:
+    candidates: list[str] = []
+
+    def add(value: str | None) -> None:
+        value = str(value or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+
+    add(configured)
+    # Ubuntu's chromium package often launches the snap; the real command is
+    # commonly /snap/bin/chromium on local desktops. Try it before the older
+    # /usr/bin paths when the configured value is missing or stale.
+    add("/snap/bin/chromium")
+    add("/usr/bin/chromium")
+    add("/usr/bin/chromium-browser")
+    add("/usr/bin/google-chrome")
+    add("/usr/bin/google-chrome-stable")
+    add("/opt/google/chrome/chrome")
+    for name in ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"]:
+        add(shutil.which(name))
+    return candidates
+
+
+def resolve_chromium_binary(configured: str = "") -> str:
+    tried = chromium_candidates(configured)
+    for candidate in tried:
+        path = Path(candidate)
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+        # If the user entered a bare command name, resolve it through PATH.
+        if os.sep not in candidate:
+            found = shutil.which(candidate)
+            if found and Path(found).is_file() and os.access(found, os.X_OK):
+                return found
+    raise RuntimeError(
+        "Chromium binary not found. Install chromium or set Chromium binary in Settings. "
+        "Tried: " + ", ".join(tried)
+    )
+
+
 def render_pdf(chromium_bin: str, html_path: Path, pdf_path: Path) -> None:
-    binary = chromium_bin or shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome") or ""
-    if binary and not Path(binary).exists():
-        found = shutil.which(binary)
-        binary = found or binary
-    if not binary:
-        raise RuntimeError("Chromium binary not found. Install chromium or set chromium_bin in Settings.")
+    binary = resolve_chromium_binary(chromium_bin)
     cmd = [
         binary,
         "--headless=new",
@@ -1091,8 +1147,7 @@ def render_pdf(chromium_bin: str, html_path: Path, pdf_path: Path) -> None:
         cmd[1] = "--headless"
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
     if proc.returncode != 0 or not pdf_path.is_file():
-        raise RuntimeError("Chromium PDF render failed: " + (proc.stderr or proc.stdout or "unknown error"))
-
+        raise RuntimeError("Chromium PDF render failed using " + binary + ": " + (proc.stderr or proc.stdout or "unknown error"))
 
 def customer_reports_json(args: argparse.Namespace) -> None:
     payload = json.load(sys.stdin)

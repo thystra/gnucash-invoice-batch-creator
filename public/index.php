@@ -147,7 +147,7 @@ function page_config(): void
         echo '</select><div class="help">The wizard, groups, templates, uploads, and generated CSV files use the active entity.</div></div>';
     }
     field_text('python_bin', 'Python binary', (string)$cfg['python_bin'], 'Usually /usr/bin/python3.');
-    field_text('chromium_bin', 'Chromium binary', (string)($cfg['chromium_bin'] ?? '/usr/bin/chromium'), 'Used to render customer report PDFs. Examples: /usr/bin/chromium, /usr/bin/chromium-browser, /usr/bin/google-chrome.');
+    render_chromium_field((string)($cfg['chromium_bin'] ?? '/snap/bin/chromium'));
     render_default_account_fields($cfg);
     field_text('default_action', 'Default invoice action', (string)$cfg['default_action'], 'Common values: ea, hour, day, material.');
     field_text('default_tax_table', 'Default tax table', (string)$cfg['default_tax_table'], 'Leave blank for no tax table.');
@@ -260,11 +260,14 @@ function action_save_config(): never
     check_csrf();
     ensure_runtime_dirs();
     $activeProfile = trim((string)($_POST['active_profile'] ?? app_config('active_profile', '')));
+    $postedChromium = trim((string)($_POST['chromium_bin'] ?? '/snap/bin/chromium'));
+    $chromiumDetection = detect_chromium_binary($postedChromium);
+    $chromiumToStore = !empty($chromiumDetection['ok']) ? (string)$chromiumDetection['path'] : $postedChromium;
     $new = [
         'active_profile' => $activeProfile,
         'gnucash_book_path' => (string)app_config('gnucash_book_path', ''),
         'python_bin' => trim((string)($_POST['python_bin'] ?? '/usr/bin/python3')),
-        'chromium_bin' => trim((string)($_POST['chromium_bin'] ?? '/usr/bin/chromium')),
+        'chromium_bin' => $chromiumToStore,
         'default_income_account' => trim((string)($_POST['default_income_account'] ?? 'Income:Dues')),
         'default_ar_account' => trim((string)($_POST['default_ar_account'] ?? 'Assets:Accounts Receivable')),
         'default_posted' => isset($_POST['default_posted']),
@@ -279,7 +282,13 @@ function action_save_config(): never
         'timezone' => trim((string)($_POST['timezone'] ?? 'America/New_York')),
     ];
     write_config($new);
-    flash('ok', 'Settings saved.');
+    if (!empty($chromiumDetection['ok']) && $postedChromium !== $chromiumToStore) {
+        flash('warn', 'Chromium was not executable at the configured path. Saved detected Chromium path: ' . $chromiumToStore);
+    } elseif (empty($chromiumDetection['ok'])) {
+        flash('warn', 'Settings saved, but Chromium was not found. Customer Report PDFs will fail until Chromium is installed or the correct path is set.');
+    } else {
+        flash('ok', 'Settings saved.');
+    }
     redirect_to('config');
 }
 
@@ -701,7 +710,7 @@ function render_params_form(array $scan): void
     field_text('action_name', 'Action', (string)($params['action'] ?? $cfg['default_action']), 'Example: ea');
     render_account_select('income_account', 'Income account', (string)($params['income_account'] ?? $cfg['default_income_account']), $incomeAccounts, 'Must match an existing GnuCash income account. Suggestions are scanned from the active book.');
     render_account_select('ar_account', 'A/R account', (string)($params['ar_account'] ?? $cfg['default_ar_account']), $receivableAccounts, 'Used as account_posted when posting invoices. Suggestions are scanned from the active book.');
-    field_number('quantity', 'Quantity', (float)($params['quantity'] ?? 1), 'Usually 1.');
+    field_number('quantity', 'Quantity', (float)($params['quantity'] ?? 1), 'Usually 1. Exported as an explicit decimal quantity, for example 1.0.');
     field_number('price', 'Unit price', (float)($params['price'] ?? 0), 'Amount per customer. Exported with two decimals, for example 15.00.');
     field_number('discount', 'Discount', (float)($params['discount'] ?? 0), 'Normally 0.');
     field_text('tax_table', 'Tax table', (string)($params['tax_table'] ?? $cfg['default_tax_table']), 'Leave blank for no tax table.');
@@ -1045,7 +1054,7 @@ function action_generate_reports(): never
         'logo_path' => is_file($logoPath) ? $logoPath : '',
         'style_reference_path' => is_file($stylePath) ? $stylePath : '',
         'custom_css' => (string)($settings['custom_css'] ?? ''),
-        'chromium_bin' => (string)app_config('chromium_bin', '/usr/bin/chromium'),
+        'chromium_bin' => (string)app_config('chromium_bin', '/snap/bin/chromium'),
     ];
     $result = run_python(['customer-reports', '--book', $book, '--out-dir', $outDir], $payload);
     if (!$result['ok'] || !is_array($result['json'])) {
@@ -1106,6 +1115,24 @@ function render_runtime_checks_compact(): void
         return;
     }
     echo '<div class="flash warn"><strong>Writable directory check has warnings.</strong> Uploads will fail until PHP can write to config/ and var/. Open Settings after setup for details, or run bin/setup-local-permissions.sh from the repo root.</div>';
+}
+
+
+function render_chromium_field(string $configured): void
+{
+    $detected = detect_chromium_binary($configured);
+    $value = !empty($detected['ok']) ? (string)$detected['path'] : $configured;
+    field_text('chromium_bin', 'Chromium binary', $value, 'Used to render customer report PDFs. Ubuntu desktop installs often use /snap/bin/chromium. The generator also tries common paths automatically if this setting is stale.');
+
+    if (!empty($detected['ok'])) {
+        $message = 'Chromium detected at ' . (string)$detected['path'] . '.';
+        if ($configured !== '' && $configured !== (string)$detected['path']) {
+            $message .= ' The configured path was stale or indirect; save Settings to store the detected path.';
+        }
+        echo '<div class="flash ok"><strong>Chromium check:</strong> ' . h($message) . '</div>';
+    } else {
+        echo '<div class="flash warn"><strong>Chromium check:</strong> Chromium was not found. Install Chromium or enter the full path. Tried: <code>' . h(implode(', ', $detected['candidates'] ?? [])) . '</code></div>';
+    }
 }
 
 function render_runtime_checks_full(): void

@@ -93,7 +93,7 @@ sudo apt update
 sudo apt install nginx php8.5-fpm php8.5-cli php8.5-sqlite3 python3 python3-openpyxl unzip zip git chromium
 ```
 
-`python3-openpyxl` is optional but enables XLSX customer-list uploads. CSV and plain text uploads work without it. `chromium` is used for Customer Report PDF rendering. If your distro installs Chromium at a different path, set the Chromium binary on the Settings page.
+`python3-openpyxl` is optional but enables XLSX customer-list uploads. CSV and plain text uploads work without it. `chromium` is used for Customer Report PDF rendering. On Ubuntu desktop systems, Chromium may be installed through snap at `/snap/bin/chromium`; the Settings page checks the configured path, tries `/snap/bin/chromium`, then common manual install paths and `command -v chromium`.
 
 Check PHP modules:
 
@@ -262,7 +262,7 @@ The report workflow is:
 5. Open **Reports**, select the same saved customer group, choose the date range and A/R accounts, and generate PDFs.
 6. Download the generated ZIP.
 
-The v0.1.6 report generator intentionally uses a tool-owned HTML template rendered by Chromium rather than trying to automate GnuCash's Scheme report engine for each customer. This is more reliable for bulk output and allows better pagination controls.
+The v0.1.7 report generator intentionally uses a tool-owned HTML template rendered by Chromium rather than trying to automate GnuCash's Scheme report engine for each customer. This is more reliable for bulk output and allows better pagination controls. The Settings page includes a Chromium sanity check and will detect `/snap/bin/chromium` when Ubuntu installs Chromium as a snap.
 
 For brand continuity, each profile can store:
 
@@ -314,7 +314,7 @@ The generated file follows GnuCash's invoice/bill import column order:
 id,date_opened,owner_id,billingid,notes,date,desc,action,account,quantity,price,disc_type,disc_how,discount,taxable,taxincluded,tax_table,date_posted,due_date,account_posted,memo_posted,accu_splits
 ```
 
-The generated file intentionally omits a header row because GnuCash expects invoice entry rows. The `price` and `discount` fields are emitted with two decimal places, for example `15.00`, to make amounts explicit for GnuCash import.
+The generated file intentionally omits a header row because GnuCash expects invoice entry rows. The `quantity` field is emitted as an explicit decimal, for example `1.0`, and the `price` and `discount` fields are emitted with two decimal places, for example `15.00`, to make amounts explicit for GnuCash import.
 
 ## Command-line checks
 
@@ -351,14 +351,14 @@ Initial commit suggestion:
 ```bash
 git add README.md LICENSE .gitignore .github/FUNDING.yml index.html app bin config/config.example.php public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
 
-git commit -m "v0.1.6 - Preserve runtime permissions and add local FPM setup"
+git commit -m "v0.1.7 - Fix quantity export and Chromium detection"
 ```
 
 Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.
 
 ## Runtime ownership notes
 
-Patch scripts from v0.1.6 onward are designed not to reset existing `var/` and `config/` permissions. They also remind you to run `bin/setup-local-permissions.sh` if runtime checks fail.
+Patch scripts from v0.1.6 onward are designed not to reset existing `var/` and `config/` permissions. They also remind you to run `bin/setup-local-permissions.sh` if runtime checks fail. v0.1.7 also improves Chromium detection for snap-based Ubuntu installs.
 
 A web application cannot create files as `$USER` while PHP-FPM is running as `www-data`. To make generated CSV files owned by `alan`, the PHP-FPM worker for this app must run as `alan`. Use `bin/install-local-fpm-pool.sh` for that local/trusted deployment model.
 

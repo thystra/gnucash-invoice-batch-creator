@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const APP_NAME = 'GnuCash Invoice Batch Creator';
-const APP_VERSION = '0.1.6';
+const APP_VERSION = '0.1.7';
 define('BASE_PATH', dirname(__DIR__));
 define('CONFIG_PATH', BASE_PATH . '/config/config.php');
 define('CONFIG_EXAMPLE_PATH', BASE_PATH . '/config/config.example.php');
@@ -82,6 +82,58 @@ function runtime_identity(): array
         'app_owner' => is_array($ownerInfo) ? (string)$ownerInfo['name'] : (string)($scriptOwner ?: 'unknown'),
         'app_group_gid' => $scriptGroup,
         'app_group' => is_array($ownerGroupInfo) ? (string)$ownerGroupInfo['name'] : (string)($scriptGroup ?: 'unknown'),
+    ];
+}
+
+
+function chromium_candidates(?string $configured = null): array
+{
+    $candidates = [];
+    $add = static function (?string $value) use (&$candidates): void {
+        $value = trim((string)$value);
+        if ($value !== '' && !in_array($value, $candidates, true)) {
+            $candidates[] = $value;
+        }
+    };
+
+    $add($configured);
+    // Ubuntu's chromium deb is commonly a transitional wrapper to the snap;
+    // in local installs the real executable is usually here.
+    $add('/snap/bin/chromium');
+    $add('/usr/bin/chromium');
+    $add('/usr/bin/chromium-browser');
+    $add('/usr/bin/google-chrome');
+    $add('/usr/bin/google-chrome-stable');
+    $add('/opt/google/chrome/chrome');
+
+    foreach (['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable'] as $cmd) {
+        $found = trim((string)@shell_exec('command -v ' . escapeshellarg($cmd) . ' 2>/dev/null'));
+        if ($found !== '') {
+            $add($found);
+        }
+    }
+
+    return $candidates;
+}
+
+function detect_chromium_binary(?string $configured = null): array
+{
+    $candidates = chromium_candidates($configured);
+    foreach ($candidates as $candidate) {
+        if (@is_file($candidate) && @is_executable($candidate)) {
+            return [
+                'ok' => true,
+                'path' => $candidate,
+                'configured' => (string)($configured ?? ''),
+                'candidates' => $candidates,
+            ];
+        }
+    }
+    return [
+        'ok' => false,
+        'path' => '',
+        'configured' => (string)($configured ?? ''),
+        'candidates' => $candidates,
     ];
 }
 

@@ -12,7 +12,7 @@ return [
     'gnucash_book_path' => '',
 
     'python_bin' => '/usr/bin/python3',
-    'chromium_bin' => '/usr/bin/chromium',
+    'chromium_bin' => '/snap/bin/chromium',
     'default_income_account' => 'Income:Dues',
     'default_ar_account' => 'Assets:Accounts Receivable',
     'default_posted' => true,
