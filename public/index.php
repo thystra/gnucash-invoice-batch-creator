@@ -26,6 +26,10 @@ try {
         'generate' => action_generate(),
         'groups' => page_groups(),
         'templates' => page_templates(),
+        'reports' => page_reports(),
+        'save_report_settings' => action_save_report_settings(),
+        'generate_reports' => action_generate_reports(),
+        'download_report_zip' => action_download_report_zip(),
         'delete_group' => action_delete_named(profile_data_dir('groups'), 'groups'),
         'delete_template' => action_delete_named(profile_data_dir('templates'), 'templates'),
         'download' => action_download(),
@@ -53,6 +57,7 @@ function page_home(): void
     echo '<section class="card"><h2>Active entity</h2><p><strong>' . h($profile['name'] ?? '(none)') . '</strong></p><p><strong>Book copy:</strong><br>' . h($book ?: '(none selected)') . '</p><p><a class="button secondary" href="?action=config">Manage entities/books</a></p></section>';
     echo '<section class="card"><h2>Saved groups</h2><p>Reuse a customer group for monthly dues or repeated billing runs. Groups are stored per entity.</p><p><a class="button secondary" href="?action=groups">Manage groups</a></p></section>';
     echo '<section class="card"><h2>Templates</h2><p>Reuse descriptions, accounts, dates, posting settings, taxes, and price levels. Templates are stored per entity.</p><p><a class="button secondary" href="?action=templates">Manage templates</a></p></section>';
+    echo '<section class="card"><h2>Customer reports</h2><p>Generate customer statement PDFs from a revised uploaded GnuCash book, using saved groups and Chromium PDF rendering.</p><p><a class="button secondary" href="?action=reports">Batch reports</a></p></section>';
     echo '<section class="card"><h2>Book scan</h2>';
     if ($book !== '' && is_file($book)) {
         $result = run_python(['scan-book', '--book', $book, '--prefix', (string)app_config('id_prefix', ''), '--padding', (string)app_config('id_padding', 0)]);
@@ -73,7 +78,8 @@ function page_setup_profile(): void
 {
     render_header('First Entity Setup');
     echo '<section class="card"><h2>Set up your first entity/profile</h2>';
-    echo '<p>Create an entity such as ORG A, ORG B, or ENTITY A LLC. Each entity keeps its own uploaded GnuCash book copies, customer groups, generated CSV files, and invoice templates.</p>';
+    echo '<p>Create an entity such as ORG A, ORG B, or ENTITY A LLC. Each entity keeps its own uploaded GnuCash book copies, customer groups, generated CSV files, invoice templates, and report output.</p>';
+    render_runtime_checks_compact();
     echo '<form method="post" enctype="multipart/form-data" action="?action=create_profile">' . csrf_field();
     echo '<input type="hidden" name="after_create" value="wizard">';
     echo '<div class="grid">';
@@ -92,6 +98,8 @@ function page_config(): void
     $profiles = list_profiles();
     $active = active_profile();
 
+    render_runtime_checks_full();
+
     echo '<section class="card"><h2>Global defaults</h2>';
     echo '<form method="post" action="?action=save_config">' . csrf_field();
     echo '<div class="grid">';
@@ -104,6 +112,7 @@ function page_config(): void
         echo '</select><div class="help">The wizard, groups, templates, uploads, and generated CSV files use the active entity.</div></div>';
     }
     field_text('python_bin', 'Python binary', (string)$cfg['python_bin'], 'Usually /usr/bin/python3.');
+    field_text('chromium_bin', 'Chromium binary', (string)($cfg['chromium_bin'] ?? '/usr/bin/chromium'), 'Used to render customer report PDFs. Examples: /usr/bin/chromium, /usr/bin/chromium-browser, /usr/bin/google-chrome.');
     field_text('default_income_account', 'Default income account', (string)$cfg['default_income_account'], 'Example: Income:Dues');
     field_text('default_ar_account', 'Default A/R account', (string)$cfg['default_ar_account'], 'Example: Assets:Accounts Receivable');
     field_text('default_action', 'Default invoice action', (string)$cfg['default_action'], 'Common values: ea, hour, day, material.');
@@ -221,6 +230,7 @@ function action_save_config(): never
         'active_profile' => $activeProfile,
         'gnucash_book_path' => (string)app_config('gnucash_book_path', ''),
         'python_bin' => trim((string)($_POST['python_bin'] ?? '/usr/bin/python3')),
+        'chromium_bin' => trim((string)($_POST['chromium_bin'] ?? '/usr/bin/chromium')),
         'default_income_account' => trim((string)($_POST['default_income_account'] ?? 'Income:Dues')),
         'default_ar_account' => trim((string)($_POST['default_ar_account'] ?? 'Assets:Accounts Receivable')),
         'default_posted' => isset($_POST['default_posted']),
@@ -642,6 +652,263 @@ function action_download(): never
     header('Content-Length: ' . filesize($path));
     readfile($path);
     exit;
+}
+
+
+function page_reports(): void
+{
+    $profile = require_profile_configured();
+    $book = require_book_configured();
+    render_header('Batch Customer Reports');
+    echo '<p class="muted">Active entity: <strong>' . h($profile['name']) . '</strong>. Active book copy: <code>' . h(basename($book)) . '</code>.</p>';
+
+    $settings = profile_report_settings($profile);
+    $groups = list_named_json(profile_data_dir('groups'));
+    $metadata = run_python(['report-metadata', '--book', $book]);
+    $arAccounts = [];
+    if ($metadata['ok'] && is_array($metadata['json'])) {
+        $arAccounts = $metadata['json']['ar_accounts'] ?? [];
+    }
+
+    echo '<section class="card"><h2>Report appearance</h2>';
+    echo '<p class="help">The tool uses a GnuCash-like customer report layout and renders PDFs with Chromium. To keep the same look and feel as your manual reports, export one GnuCash Customer Report as HTML and upload it here as a style reference. CSS found in that HTML will be layered into the tool-owned report template.</p>';
+    echo '<form method="post" enctype="multipart/form-data" action="?action=save_report_settings">' . csrf_field();
+    echo '<div class="grid">';
+    field_text('organization_name', 'Header organization/entity name', (string)$settings['organization_name'], 'Shown in the report header. Example: Troop 20.');
+    field_text('footer_text', 'Footer text', (string)$settings['footer_text'], 'Optional.');
+    echo '<div><label for="page_size">Page size</label><select id="page_size" name="page_size">';
+    foreach (['Letter', 'A4'] as $size) {
+        echo '<option value="' . h($size) . '"' . ((string)$settings['page_size'] === $size ? ' selected' : '') . '>' . h($size) . '</option>';
+    }
+    echo '</select></div>';
+    echo '<div><label for="logo_file">Logo / banner image</label><input type="file" id="logo_file" name="logo_file" accept=".png,.jpg,.jpeg,.gif,.webp,.svg"><div class="help">Optional per-entity logo. Existing: ' . h((string)($settings['logo_file'] ?: '(none)')) . '</div></div>';
+    echo '<div><label for="style_reference_file">GnuCash exported HTML style reference</label><input type="file" id="style_reference_file" name="style_reference_file" accept=".html,.htm"><div class="help">Optional. Export one manually formatted Customer Report from GnuCash as HTML and upload it here. Existing: ' . h((string)($settings['style_reference_file'] ?: '(none)')) . '</div></div>';
+    echo '</div>';
+    echo '<label for="custom_css">Custom CSS</label><textarea id="custom_css" name="custom_css" rows="8">' . h((string)$settings['custom_css']) . '</textarea>';
+    echo '<label class="check"><input type="checkbox" name="include_zero_balance" value="1" ' . (!empty($settings['include_zero_balance']) ? 'checked' : '') . '> Include zero-balance accounts/customers</label>';
+    echo '<div class="actions"><button type="submit">Save report appearance</button></div></form></section>';
+
+    echo '<section class="card"><h2>Generate customer report PDFs</h2>';
+    if (!$groups) {
+        echo '<div class="flash warn">No saved customer groups exist for this entity yet. Create a group from the Batch Wizard first, then return here.</div>';
+    }
+    if (!$metadata['ok'] || !is_array($metadata['json'])) {
+        echo '<div class="flash error">Unable to scan report metadata. Report generation currently requires a readable GnuCash SQLite book copy.<pre>' . h(($metadata['stderr'] ?? '') . "\n" . ($metadata['stdout'] ?? '')) . '</pre></div>';
+    }
+    echo '<form method="post" action="?action=generate_reports">' . csrf_field();
+    echo '<div class="grid">';
+    echo '<div><label for="group_slug">Customer group</label><select id="group_slug" name="group_slug" required><option value="">-- select a saved group --</option>';
+    foreach ($groups as $group) {
+        echo '<option value="' . h($group['slug']) . '">' . h($group['name']) . ' (' . h(count($group['data']['customer_ids'] ?? [])) . ' customers)</option>';
+    }
+    echo '</select></div>';
+    field_date('date_from', 'Date range start', date('Y-01-01'));
+    field_date('date_to', 'Date range end', date('Y-m-d'));
+    field_text('batch_name', 'Batch/report folder name', 'customer-reports-' . date('Y-m-d'), 'Used for the generated ZIP and report folder.');
+    echo '</div>';
+
+    echo '<h3>A/R accounts</h3>';
+    if ($arAccounts) {
+        echo '<p class="help">Select one or more receivable accounts. Leaving all selected mirrors the multi-account manual report workflow.</p>';
+        echo '<div class="checks">';
+        foreach ($arAccounts as $acct) {
+            $guid = (string)($acct['guid'] ?? '');
+            $name = (string)($acct['full_name'] ?? $acct['name'] ?? $guid);
+            echo '<label class="check"><input type="checkbox" name="ar_accounts[]" value="' . h($guid) . '" checked> ' . h($name) . '</label>';
+        }
+        echo '</div>';
+    } else {
+        echo '<div class="flash warn">No Accounts Receivable accounts were detected. The report generator will attempt to use posted invoice accounts.</div>';
+    }
+    echo '<label class="check"><input type="checkbox" name="include_zero_balance" value="1" ' . (!empty($settings['include_zero_balance']) ? 'checked' : '') . '> Include zero-balance account sections and customers</label>';
+    echo '<div class="actions"><button type="submit"' . (!$groups ? ' disabled' : '') . '>Generate PDF batch</button></div></form></section>';
+
+    render_recent_report_batches();
+    render_footer();
+}
+
+function action_save_report_settings(): never
+{
+    check_csrf();
+    $profile = require_profile_configured();
+    ensure_profile_dirs((string)$profile['slug']);
+    $settings = profile_report_settings($profile);
+    $settings['organization_name'] = trim((string)($_POST['organization_name'] ?? $profile['name'] ?? ''));
+    $settings['footer_text'] = trim((string)($_POST['footer_text'] ?? ''));
+    $settings['page_size'] = in_array(($_POST['page_size'] ?? 'Letter'), ['Letter', 'A4'], true) ? (string)$_POST['page_size'] : 'Letter';
+    $settings['include_zero_balance'] = isset($_POST['include_zero_balance']);
+    $settings['custom_css'] = (string)($_POST['custom_css'] ?? '');
+
+    $assetDir = profile_dir((string)$profile['slug']) . '/report-assets';
+    if (!is_dir($assetDir)) {
+        mkdir($assetDir, 0770, true);
+    }
+    if (!is_writable($assetDir)) {
+        flash('error', 'Report asset directory is not writable: ' . $assetDir);
+        redirect_to('reports');
+    }
+
+    if (!empty($_FILES['logo_file']) && (int)($_FILES['logo_file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+        $err = (int)$_FILES['logo_file']['error'];
+        if ($err !== UPLOAD_ERR_OK) {
+            flash('error', 'Logo upload failed: ' . upload_error_message($err));
+            redirect_to('reports');
+        }
+        $original = basename((string)$_FILES['logo_file']['name']);
+        if (!preg_match('/\.(png|jpe?g|gif|webp|svg)$/i', $original)) {
+            flash('error', 'Logo must be PNG, JPG, GIF, WEBP, or SVG.');
+            redirect_to('reports');
+        }
+        $stored = 'logo-' . date('Ymd-His') . '-' . slugify($original);
+        if (!move_uploaded_file((string)$_FILES['logo_file']['tmp_name'], $assetDir . '/' . $stored)) {
+            flash('error', 'Unable to store logo upload.');
+            redirect_to('reports');
+        }
+        chmod($assetDir . '/' . $stored, 0660);
+        $settings['logo_file'] = $stored;
+    }
+
+    if (!empty($_FILES['style_reference_file']) && (int)($_FILES['style_reference_file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+        $err = (int)$_FILES['style_reference_file']['error'];
+        if ($err !== UPLOAD_ERR_OK) {
+            flash('error', 'Style reference upload failed: ' . upload_error_message($err));
+            redirect_to('reports');
+        }
+        $original = basename((string)$_FILES['style_reference_file']['name']);
+        if (!preg_match('/\.(html?|xhtml)$/i', $original)) {
+            flash('error', 'Style reference must be an exported HTML file.');
+            redirect_to('reports');
+        }
+        $stored = 'gnucash-style-reference-' . date('Ymd-His') . '.html';
+        if (!move_uploaded_file((string)$_FILES['style_reference_file']['tmp_name'], $assetDir . '/' . $stored)) {
+            flash('error', 'Unable to store style reference upload.');
+            redirect_to('reports');
+        }
+        chmod($assetDir . '/' . $stored, 0660);
+        $settings['style_reference_file'] = $stored;
+    }
+
+    $profile['report_settings'] = $settings;
+    save_profile($profile);
+    flash('ok', 'Report appearance settings saved.');
+    redirect_to('reports');
+}
+
+function action_generate_reports(): never
+{
+    check_csrf();
+    $profile = require_profile_configured();
+    $book = require_book_configured();
+    $groupSlug = basename((string)($_POST['group_slug'] ?? ''));
+    $group = json_read_file(profile_data_dir('groups') . '/' . $groupSlug . '.json', null);
+    if (!is_array($group) || empty($group['customer_ids'])) {
+        flash('error', 'Select a valid saved customer group.');
+        redirect_to('reports');
+    }
+    $batch = slugify((string)($_POST['batch_name'] ?? 'customer-reports-' . date('Y-m-d')));
+    if ($batch === '') {
+        $batch = 'customer-reports-' . date('Ymd-His');
+    }
+    $outDir = reports_batch_dir($batch, $profile);
+    $settings = profile_report_settings($profile);
+    $arAccounts = array_values(array_filter(array_map('strval', $_POST['ar_accounts'] ?? [])));
+    $logoPath = !empty($settings['logo_file']) ? report_asset_path((string)$settings['logo_file'], $profile) : '';
+    $stylePath = !empty($settings['style_reference_file']) ? report_asset_path((string)$settings['style_reference_file'], $profile) : '';
+    $payload = [
+        'customer_ids' => $group['customer_ids'],
+        'group_name' => (string)($group['name'] ?? $groupSlug),
+        'organization_name' => (string)($settings['organization_name'] ?? $profile['name'] ?? ''),
+        'footer_text' => (string)($settings['footer_text'] ?? ''),
+        'page_size' => (string)($settings['page_size'] ?? 'Letter'),
+        'include_zero_balance' => isset($_POST['include_zero_balance']),
+        'date_from' => (string)($_POST['date_from'] ?? date('Y-01-01')),
+        'date_to' => (string)($_POST['date_to'] ?? date('Y-m-d')),
+        'ar_accounts' => $arAccounts,
+        'logo_path' => is_file($logoPath) ? $logoPath : '',
+        'style_reference_path' => is_file($stylePath) ? $stylePath : '',
+        'custom_css' => (string)($settings['custom_css'] ?? ''),
+        'chromium_bin' => (string)app_config('chromium_bin', '/usr/bin/chromium'),
+    ];
+    $result = run_python(['customer-reports', '--book', $book, '--out-dir', $outDir], $payload);
+    if (!$result['ok'] || !is_array($result['json'])) {
+        flash('error', 'Customer report generation failed: ' . trim(($result['stderr'] ?? '') . ' ' . ($result['stdout'] ?? '')));
+        redirect_to('reports');
+    }
+    flash('ok', 'Generated ' . h((string)($result['json']['pdf_count'] ?? 0)) . ' customer report PDFs.');
+    redirect_to('reports', ['batch' => $batch]);
+}
+
+function action_download_report_zip(): never
+{
+    require_profile_configured();
+    $batch = basename((string)($_GET['batch'] ?? ''));
+    $zip = reports_batch_dir($batch) . '/customer-reports.zip';
+    if ($batch === '' || !is_file($zip)) {
+        http_response_code(404);
+        exit('Report ZIP not found.');
+    }
+    header('Content-Type: application/zip');
+    header('Content-Disposition: attachment; filename="' . $batch . '.zip"');
+    header('Content-Length: ' . filesize($zip));
+    readfile($zip);
+    exit;
+}
+
+function render_recent_report_batches(): void
+{
+    echo '<section class="card"><h2>Recent report batches</h2>';
+    $base = reports_batch_dir();
+    $dirs = glob($base . '/*', GLOB_ONLYDIR) ?: [];
+    usort($dirs, fn($a, $b) => (filemtime($b) ?: 0) <=> (filemtime($a) ?: 0));
+    if (!$dirs) {
+        echo '<p>No report batches generated yet for this entity.</p></section>';
+        return;
+    }
+    echo '<table><tr><th>Batch</th><th>Generated</th><th>PDFs</th><th>Actions</th></tr>';
+    foreach (array_slice($dirs, 0, 10) as $dir) {
+        $batch = basename($dir);
+        $manifest = json_read_file($dir . '/batch-manifest.json', []);
+        $pdfCount = is_array($manifest) ? (int)($manifest['pdf_count'] ?? 0) : 0;
+        $generated = is_array($manifest) ? (string)($manifest['generated_at'] ?? '') : '';
+        echo '<tr><td><code>' . h($batch) . '</code></td><td>' . h(substr($generated, 0, 19)) . '</td><td>' . h($pdfCount) . '</td><td>';
+        if (is_file($dir . '/customer-reports.zip')) {
+            echo '<a class="button secondary" href="?action=download_report_zip&batch=' . h($batch) . '">Download ZIP</a>';
+        }
+        echo '</td></tr>';
+    }
+    echo '</table></section>';
+}
+
+function render_runtime_checks_compact(): void
+{
+    $checks = runtime_writable_checks();
+    $bad = array_values(array_filter($checks, fn($c) => empty($c['readable']) || empty($c['writable'])));
+    if (!$bad) {
+        echo '<div class="flash ok">Runtime directory check passed: config and var storage appear writable by PHP.</div>';
+        return;
+    }
+    echo '<div class="flash warn"><strong>Writable directory check has warnings.</strong> Uploads will fail until PHP can write to config/ and var/. Open Settings after setup for details, or run the ACL commands in the README.</div>';
+}
+
+function render_runtime_checks_full(): void
+{
+    echo '<section class="card"><h2>Runtime checks</h2>';
+    echo '<p class="help">Uploads and generated reports require the PHP-FPM user to write to <code>config/</code> and <code>var/</code>. The directory should usually be group-owned by <code>publicweb</code> with setgid/default ACLs.</p>';
+    echo '<table><tr><th>Path</th><th>Exists</th><th>Readable</th><th>Writable</th></tr>';
+    foreach (runtime_writable_checks() as $check) {
+        $ok = !empty($check['readable']) && !empty($check['writable']);
+        echo '<tr><td><code>' . h($check['path']) . '</code><br><span class="muted">' . h($check['label']) . '</span></td><td>' . h(!empty($check['exists']) ? 'yes' : 'no') . '</td><td>' . h(!empty($check['readable']) ? 'yes' : 'no') . '</td><td>' . ($ok ? '<span class="badge">yes</span>' : '<span class="badge bad">no</span>') . '</td></tr>';
+    }
+    echo '</table>';
+    echo '<details><summary>Suggested local ACL repair commands</summary><pre>cd ~/public_html/gnucash-invoice-batch-creator
+sudo chown -R "$USER":publicweb .
+sudo find var config -type d -exec chmod 2770 {} +
+sudo find var config -type f -exec chmod 0660 {} +
+sudo setfacl -R -m u:"$USER":rwx,g:publicweb:rwx var config
+sudo setfacl -R -d -m u:"$USER":rwx,g:publicweb:rwx var config
+sudo usermod -aG publicweb www-data
+sudo systemctl restart php8.5-fpm nginx</pre></details>';
+    echo '</section>';
 }
 
 function page_not_found(): void

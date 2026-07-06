@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const APP_NAME = 'GnuCash Invoice Batch Creator';
-const APP_VERSION = '0.1.1';
+const APP_VERSION = '0.1.2';
 define('BASE_PATH', dirname(__DIR__));
 define('CONFIG_PATH', BASE_PATH . '/config/config.php');
 define('CONFIG_EXAMPLE_PATH', BASE_PATH . '/config/config.example.php');
@@ -65,6 +65,69 @@ function ensure_runtime_dirs(): void
             mkdir($path, 0770, true);
         }
     }
+}
+
+
+function upload_error_message(int $code): string
+{
+    return match ($code) {
+        UPLOAD_ERR_INI_SIZE => 'Uploaded file is larger than PHP upload_max_filesize.',
+        UPLOAD_ERR_FORM_SIZE => 'Uploaded file is larger than the form limit.',
+        UPLOAD_ERR_PARTIAL => 'Uploaded file was only partially uploaded.',
+        UPLOAD_ERR_NO_FILE => 'No file was uploaded.',
+        UPLOAD_ERR_NO_TMP_DIR => 'PHP upload temporary directory is missing.',
+        UPLOAD_ERR_CANT_WRITE => 'PHP could not write the uploaded file to disk.',
+        UPLOAD_ERR_EXTENSION => 'A PHP extension stopped the upload.',
+        default => 'Unknown upload error code: ' . $code,
+    };
+}
+
+function runtime_writable_checks(): array
+{
+    ensure_runtime_dirs();
+    $checks = [];
+    $paths = [
+        'Application root' => BASE_PATH,
+        'config/' => BASE_PATH . '/config',
+        'config/config.php' => CONFIG_PATH,
+        'var/' => BASE_PATH . '/var',
+        'var/profiles/' => profiles_root(),
+        'var/uploads/' => BASE_PATH . '/var/uploads',
+        'var/generated/' => BASE_PATH . '/var/generated',
+    ];
+    $profile = active_profile();
+    if ($profile) {
+        $slug = (string)$profile['slug'];
+        foreach (['books', 'uploads', 'generated', 'groups', 'templates', 'report-assets', 'reports'] as $dir) {
+            $paths['active profile ' . $dir . '/'] = profile_dir($slug) . '/' . $dir;
+        }
+    }
+    foreach ($paths as $label => $path) {
+        $exists = file_exists($path);
+        $target = $path;
+        if (!$exists && basename($path) === 'config.php') {
+            $target = dirname($path);
+        }
+        $checks[] = [
+            'label' => $label,
+            'path' => $path,
+            'exists' => $exists,
+            'writable' => is_writable($target),
+            'readable' => is_readable($target),
+            'is_dir' => is_dir($path),
+        ];
+    }
+    return $checks;
+}
+
+function runtime_has_warnings(): bool
+{
+    foreach (runtime_writable_checks() as $check) {
+        if (empty($check['readable']) || empty($check['writable'])) {
+            return true;
+        }
+    }
+    return false;
 }
 
 function csrf_token(): string
@@ -218,7 +281,7 @@ function profile_json_path(string $slug): string
 
 function ensure_profile_dirs(string $slug): void
 {
-    foreach (['books', 'uploads', 'generated', 'groups', 'templates', 'cache', 'log'] as $dir) {
+    foreach (['books', 'uploads', 'generated', 'groups', 'templates', 'report-assets', 'report-templates', 'reports', 'cache', 'log'] as $dir) {
         $path = profile_dir($slug) . '/' . $dir;
         if (!is_dir($path)) {
             mkdir($path, 0770, true);
@@ -244,6 +307,7 @@ function normalize_profile(array $profile, string $slug): array
     $profile['updated_at'] = $profile['updated_at'] ?? $profile['created_at'];
     $profile['books'] = is_array($profile['books'] ?? null) ? $profile['books'] : [];
     $profile['active_book'] = (string)($profile['active_book'] ?? '');
+    $profile['report_settings'] = is_array($profile['report_settings'] ?? null) ? $profile['report_settings'] : [];
     return $profile;
 }
 
@@ -340,6 +404,46 @@ function current_book_path(): string
     return active_book_path(active_profile());
 }
 
+
+function profile_report_settings(?array $profile = null): array
+{
+    $profile = $profile ?: active_profile();
+    $defaultName = is_array($profile) ? (string)($profile['name'] ?? '') : '';
+    $settings = is_array($profile) ? (array)($profile['report_settings'] ?? []) : [];
+    return array_replace([
+        'organization_name' => $defaultName,
+        'footer_text' => '',
+        'page_size' => 'Letter',
+        'include_zero_balance' => true,
+        'style_reference_file' => '',
+        'logo_file' => '',
+        'custom_css' => '',
+    ], $settings);
+}
+
+function report_asset_path(string $file, ?array $profile = null): string
+{
+    $profile = $profile ?: active_profile();
+    if (!is_array($profile)) {
+        return '';
+    }
+    $file = basename($file);
+    if ($file === '') {
+        return '';
+    }
+    return profile_dir((string)$profile['slug']) . '/report-assets/' . $file;
+}
+
+function reports_batch_dir(?string $batch = null, ?array $profile = null): string
+{
+    $profile = $profile ?: active_profile();
+    if (!is_array($profile)) {
+        return BASE_PATH . '/var/generated';
+    }
+    $base = profile_dir((string)$profile['slug']) . '/reports/customer-reports';
+    return $batch === null || $batch === '' ? $base : $base . '/' . basename($batch);
+}
+
 function require_profile_configured(): array
 {
     $profile = active_profile();
@@ -374,18 +478,27 @@ function allowed_book_extension(string $name): bool
 
 function store_uploaded_book(string $field, array $profile): array
 {
-    if (empty($_FILES[$field]) || ($_FILES[$field]['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
-        throw new RuntimeException('Upload a GnuCash book copy.');
+    $err = (int)($_FILES[$field]['error'] ?? UPLOAD_ERR_NO_FILE);
+    if (empty($_FILES[$field]) || $err !== UPLOAD_ERR_OK) {
+        throw new RuntimeException('Upload a GnuCash book copy. ' . upload_error_message($err));
     }
     $original = basename((string)$_FILES[$field]['name']);
     if (!allowed_book_extension($original)) {
-        throw new RuntimeException('Unsupported GnuCash book upload extension. Use .gnucash, .sqlite, .sqlite3, .db, .xml, .xac, or .gz.');
+        throw new RuntimeException('Unsupported GnuCash book upload extension. Use .gnucash, .sqlite, .sqlite3, .db, .db3, .xml, .xac, or .gz.');
     }
     ensure_profile_dirs((string)$profile['slug']);
+    $booksDir = profile_dir((string)$profile['slug']) . '/books';
+    if (!is_dir($booksDir) || !is_writable($booksDir)) {
+        throw new RuntimeException('Unable to store uploaded GnuCash book: profile books directory is not writable: ' . $booksDir);
+    }
     $stored = date('Ymd-His') . '-' . bin2hex(random_bytes(4)) . '-' . slugify($original);
-    $target = profile_dir((string)$profile['slug']) . '/books/' . $stored;
-    if (!move_uploaded_file((string)$_FILES[$field]['tmp_name'], $target)) {
-        throw new RuntimeException('Unable to store uploaded GnuCash book.');
+    $target = $booksDir . '/' . $stored;
+    $tmp = (string)$_FILES[$field]['tmp_name'];
+    if (!is_uploaded_file($tmp)) {
+        throw new RuntimeException('Unable to store uploaded GnuCash book: PHP did not provide a valid uploaded temporary file.');
+    }
+    if (!move_uploaded_file($tmp, $target)) {
+        throw new RuntimeException('Unable to store uploaded GnuCash book. Check PHP-FPM/nginx user write access to: ' . $booksDir);
     }
     chmod($target, 0660);
     return [
@@ -432,10 +545,13 @@ function render_header(string $title): void
     if ($profile) {
         echo '<span class="entity">' . h($profile['name']) . '</span>';
     }
-    echo '</div><nav><a href="?">Home</a><a href="?action=wizard">Batch Wizard</a><a href="?action=groups">Groups</a><a href="?action=templates">Templates</a><a href="?action=config">Settings</a></nav></header>';
+    echo '</div><nav><a href="?">Home</a><a href="?action=wizard">Batch Wizard</a><a href="?action=groups">Groups</a><a href="?action=templates">Templates</a><a href="?action=reports">Reports</a><a href="?action=config">Settings</a></nav></header>';
     echo '<main class="wrap">';
     foreach (pop_flashes() as $message) {
         echo '<div class="flash ' . h($message['type']) . '">' . h($message['message']) . '</div>';
+    }
+    if (runtime_has_warnings()) {
+        echo '<div class="flash warn">Runtime writable checks have warnings. Open Settings → Runtime checks if uploads or generation fail.</div>';
     }
     if (!$profiles) {
         echo '<div class="flash warn">No entity/profile has been configured yet. Create the first entity to continue.</div>';

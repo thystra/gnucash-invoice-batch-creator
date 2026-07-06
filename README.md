@@ -1,8 +1,8 @@
 # GnuCash Invoice Batch Creator
 
-A local/internal-network web application for creating batch customer invoice CSV files that can be imported into GnuCash.
+A local/internal-network web application for creating batch customer invoice CSV files that can be imported into GnuCash, and for generating batch customer report PDFs from a revised uploaded GnuCash book.
 
-The initial goal is monthly or recurring invoices/dues: create an entity/profile, upload a copy of that entity's GnuCash book, upload or reuse a customer list, choose shared invoice parameters once, preview the batch, optionally save the customer group and/or invoice template, then generate a GnuCash invoice import CSV.
+The initial goal is monthly or recurring invoices/dues: create an entity/profile, upload a copy of that entity's GnuCash book, upload or reuse a customer list, choose shared invoice parameters once, preview the batch, optionally save the customer group and/or invoice template, then generate a GnuCash invoice import CSV. After the CSV is imported into GnuCash, upload the revised book copy and reuse the same group to generate Customer Report PDFs as a ZIP.
 
 Repository: <https://github.com/thystra/gnucash-invoice-batch-creator>
 
@@ -18,6 +18,9 @@ Repository: <https://github.com/thystra/gnucash-invoice-batch-creator>
 - Saves reusable customer groups under each entity/profile.
 - Saves reusable invoice templates under each entity/profile.
 - Generates a GnuCash invoice import CSV under each entity/profile.
+- Generates GnuCash-like Customer Report PDFs in batch using saved groups and Chromium PDF rendering.
+- Supports multiple A/R accounts in customer reports.
+- Stores report appearance settings, logo/banner uploads, custom CSS, and optional exported GnuCash HTML style references per entity/profile.
 - Supports posted invoices by default, with a configuration option to generate unposted invoices.
 - Includes a root `index.html` redirect for convenience when browsing the repo directory directly.
 
@@ -27,7 +30,7 @@ Run this on localhost or a trusted internal network only. This tool reads custom
 
 Do not point a public web server at this repository. The preferred NGINX root is still the `public/` directory. The root `index.html` is only a convenience redirect for local use; it is not a substitute for keeping `config/`, `var/`, and source files out of the web root.
 
-Upload a copy of your GnuCash file for testing before importing generated CSV files into your live book.
+Upload a copy of your GnuCash file for testing before importing generated CSV files into your live book. For report generation, upload the revised copy after importing invoices into GnuCash; the report generator reads the uploaded copy and does not modify it.
 
 ## GnuCash import behavior
 
@@ -59,10 +62,10 @@ Install baseline packages:
 
 ```bash
 sudo apt update
-sudo apt install nginx php8.5-fpm php8.5-cli php8.5-sqlite3 python3 python3-openpyxl unzip git
+sudo apt install nginx php8.5-fpm php8.5-cli php8.5-sqlite3 python3 python3-openpyxl unzip zip git chromium
 ```
 
-`python3-openpyxl` is optional but enables XLSX customer-list uploads. CSV and plain text uploads work without it.
+`python3-openpyxl` is optional but enables XLSX customer-list uploads. CSV and plain text uploads work without it. `chromium` is used for Customer Report PDF rendering. If your distro installs Chromium at a different path, set the Chromium binary on the Settings page.
 
 Check PHP modules:
 
@@ -89,15 +92,31 @@ Create writable runtime directories:
 
 ```bash
 mkdir -p var/uploads var/generated var/groups var/templates var/profiles var/cache var/log config
-chmod 700 var var/uploads var/generated var/groups var/templates var/profiles var/cache var/log config
+chmod 750 var config
+chmod 770 var/uploads var/generated var/groups var/templates var/profiles var/cache var/log config
 ```
 
-If PHP-FPM runs as `www-data`, grant write access to runtime directories. One simple local-dev option is:
+If PHP-FPM runs as `www-data`, grant write access to runtime directories. For your local `publicweb` group layout, this is the recommended setup:
 
 ```bash
-sudo chgrp -R www-data var config
-sudo chmod -R 770 var config
+cd /home/$USER/public_html/gnucash-invoice-batch-creator
+sudo chown -R "$USER":publicweb .
+sudo find var config -type d -exec chmod 2770 {} +
+sudo find var config -type f -exec chmod 0660 {} +
+sudo setfacl -R -m u:"$USER":rwx,g:publicweb:rwx var config
+sudo setfacl -R -d -m u:"$USER":rwx,g:publicweb:rwx var config
+sudo usermod -aG publicweb www-data
+sudo systemctl restart php8.5-fpm nginx
 ```
+
+If your PHP-FPM pool runs as `nginx` instead of `www-data`, also run:
+
+```bash
+sudo usermod -aG publicweb nginx
+sudo systemctl restart php8.5-fpm nginx
+```
+
+The important bit is the setgid/default ACL combination on `var/` and `config/`. New uploaded books, generated CSVs, generated PDFs, profiles, groups, and templates should inherit group write access.
 
 For a single-user local workstation setup, you may instead run a dedicated PHP-FPM pool as your user and avoid giving `www-data` access to private files.
 
@@ -113,6 +132,10 @@ var/profiles/<profile-slug>/
   generated/
   groups/
   templates/
+  report-assets/
+  report-templates/
+  reports/
+    customer-reports/
 ```
 
 This keeps ORG A's uploaded book copies, groups, templates, uploads, and generated CSVs separate from ORG B's.
@@ -178,9 +201,48 @@ The Settings page lets you:
 - Choose which uploaded book copy is active.
 - Delete stored book copies.
 - Delete an entire entity/profile and its stored data.
-- Configure global defaults such as Python path, income account, A/R account, invoice ID prefix, posting default, tax defaults, and timezone.
+- Configure global defaults such as Python path, Chromium path, income account, A/R account, invoice ID prefix, posting default, tax defaults, and timezone.
+- View runtime writable checks for `config/`, `var/`, and active profile directories.
 
 The app writes local settings to `config/config.php`, which is intentionally ignored by git.
+
+
+## Batch Customer Reports
+
+The report workflow is:
+
+1. Generate a GnuCash invoice CSV from a saved group/template.
+2. Import the CSV into GnuCash.
+3. Save a revised copy of the GnuCash book.
+4. Upload that revised copy into the same entity/profile.
+5. Open **Reports**, select the same saved customer group, choose the date range and A/R accounts, and generate PDFs.
+6. Download the generated ZIP.
+
+The v0.1.2 report generator intentionally uses a tool-owned HTML template rendered by Chromium rather than trying to automate GnuCash's Scheme report engine for each customer. This is more reliable for bulk output and allows better pagination controls.
+
+For brand continuity, each profile can store:
+
+- Header organization/entity name
+- Logo or banner image
+- Footer text
+- Custom CSS
+- Optional exported GnuCash Customer Report HTML as a style reference
+
+To use the style reference option, generate one Customer Report manually in GnuCash, export it as HTML, and upload that HTML on the Reports page. The tool extracts CSS from the exported HTML and layers it into the GnuCash-like report template.
+
+Report generation currently requires a SQLite GnuCash book copy for transaction-level data. XML book scanning still works for customer/invoice ID discovery, but the transaction-level Customer Report generator expects the SQLite schema.
+
+Command-line report metadata check:
+
+```bash
+python3 bin/gnc_batch_invoice.py report-metadata --book /path/to/book.gnucash
+```
+
+Command-line report generation expects JSON on stdin and is normally driven by the web UI:
+
+```bash
+python3 bin/gnc_batch_invoice.py customer-reports --book /path/to/book.gnucash --out-dir /tmp/customer-reports < report-batch.json
+```
 
 ## Upload file formats
 
@@ -245,7 +307,7 @@ Initial commit suggestion:
 ```bash
 git add README.md LICENSE .gitignore .github/FUNDING.yml index.html app bin config/config.example.php public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
 
-git commit -m "v0.1.1 - Add entity profiles and uploaded book storage"
+git commit -m "v0.1.2 - Add batch customer report PDF generation"
 ```
 
 Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.

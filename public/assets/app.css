@@ -59,3 +59,6 @@ pre { white-space: pre-wrap; background: var(--panel); border: 1px solid var(--l
 .inline button { padding: 0.35rem 0.55rem; font-size: 0.9rem; }
 .muted { color: var(--muted); }
 code { background: rgba(127,127,127,.12); border-radius: 5px; padding: 0.08rem 0.25rem; }
+.badge.bad { border-color: var(--danger); color: var(--danger); }
+.checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.2rem 1rem; }
+button:disabled { opacity: 0.55; cursor: not-allowed; }
