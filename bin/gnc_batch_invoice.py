@@ -27,6 +27,27 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable
 
+# Match the PHP application runtime policy: files created by this helper should
+# be group-readable/writable in setgid profile directories. Ownership still
+# follows the PHP-FPM user that launched this script.
+os.umask(0o007)
+
+
+def apply_runtime_permissions(path: Path) -> None:
+    try:
+        if path.is_dir():
+            path.chmod(0o2770)
+        elif path.exists():
+            path.chmod(0o660)
+    except OSError:
+        pass
+
+
+def ensure_runtime_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    apply_runtime_permissions(path)
+
+
 FIELDNAMES = [
     "id",
     "date_opened",
@@ -654,10 +675,11 @@ def generate_json(args: argparse.Namespace) -> None:
         rows.append(row)
 
     out = Path(args.out).expanduser()
-    out.parent.mkdir(parents=True, exist_ok=True)
+    ensure_runtime_dir(out.parent)
     with out.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh, delimiter=delimiter, quoting=csv.QUOTE_MINIMAL)
         writer.writerows(rows)
+    apply_runtime_permissions(out)
 
     print_json(
         {
@@ -1078,8 +1100,8 @@ def customer_reports_json(args: argparse.Namespace) -> None:
     out_dir = Path(args.out_dir).expanduser()
     html_dir = out_dir / "html"
     pdf_dir = out_dir / "pdf"
-    html_dir.mkdir(parents=True, exist_ok=True)
-    pdf_dir.mkdir(parents=True, exist_ok=True)
+    ensure_runtime_dir(html_dir)
+    ensure_runtime_dir(pdf_dir)
     customer_ids = dedupe(payload.get("customer_ids", []))
     date_from = parse_iso_date(str(payload.get("date_from") or date.today().replace(month=1, day=1)))
     date_to = parse_iso_date(str(payload.get("date_to") or date.today()))
@@ -1104,6 +1126,7 @@ def customer_reports_json(args: argparse.Namespace) -> None:
         html_path = html_dir / f"{base}.html"
         pdf_path = pdf_dir / f"{base}.pdf"
         html_path.write_text(html, encoding="utf-8")
+        apply_runtime_permissions(html_path)
         if not include_zero:
             total = Decimal("0")
             for account in customer.get("accounts", {}).values():
@@ -1112,12 +1135,14 @@ def customer_reports_json(args: argparse.Namespace) -> None:
             if total == 0:
                 continue
         render_pdf(str(payload.get("chromium_bin") or ""), html_path, pdf_path)
+        apply_runtime_permissions(pdf_path)
         generated.append({"customer_id": customer["id"], "customer_name": customer["name"], "html": str(html_path), "pdf": str(pdf_path), "status": "generated"})
 
     zip_path = out_dir / "customer-reports.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for item in generated:
             zf.write(item["pdf"], arcname=Path(item["pdf"]).name)
+    apply_runtime_permissions(zip_path)
 
     manifest = {
         "ok": True,
@@ -1130,7 +1155,10 @@ def customer_reports_json(args: argparse.Namespace) -> None:
         "zip": str(zip_path),
         "customers": generated,
     }
-    (out_dir / "batch-manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    manifest_path = out_dir / "batch-manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    apply_runtime_permissions(manifest_path)
+    apply_runtime_permissions(out_dir)
     print_json(manifest)
 
 def build_parser() -> argparse.ArgumentParser:

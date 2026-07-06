@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const APP_NAME = 'GnuCash Invoice Batch Creator';
-const APP_VERSION = '0.1.5';
+const APP_VERSION = '0.1.6';
 define('BASE_PATH', dirname(__DIR__));
 define('CONFIG_PATH', BASE_PATH . '/config/config.php');
 define('CONFIG_EXAMPLE_PATH', BASE_PATH . '/config/config.example.php');
@@ -18,6 +18,11 @@ $userConfig = is_file(CONFIG_PATH) ? require CONFIG_PATH : [];
 $config = array_replace($defaultConfig, is_array($userConfig) ? $userConfig : []);
 
 date_default_timezone_set((string)($config['timezone'] ?? 'America/New_York'));
+// Keep generated runtime files group-readable/writable when the application is
+// deployed with a shared project group such as publicweb. This does not change
+// file ownership; use a dedicated PHP-FPM pool running as your user when you
+// want generated CSV/PDF files to be owned by that user.
+umask(0007);
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_name('gnc_batch_invoice_creator');
@@ -39,6 +44,7 @@ function write_config(array $newConfig): void
     if (file_put_contents(CONFIG_PATH, $php, LOCK_EX) === false) {
         throw new RuntimeException('Unable to write config/config.php. Check permissions.');
     }
+    apply_runtime_permissions(CONFIG_PATH);
 }
 
 function update_config(array $changes): void
@@ -57,6 +63,47 @@ function path_join(string ...$parts): string
     return preg_replace('#/+#', '/', implode('/', $parts));
 }
 
+function runtime_identity(): array
+{
+    $scriptOwner = @fileowner(BASE_PATH);
+    $scriptGroup = @filegroup(BASE_PATH);
+    $effectiveUid = function_exists('posix_geteuid') ? posix_geteuid() : null;
+    $effectiveGid = function_exists('posix_getegid') ? posix_getegid() : null;
+    $userInfo = is_int($effectiveUid) && function_exists('posix_getpwuid') ? posix_getpwuid($effectiveUid) : false;
+    $groupInfo = is_int($effectiveGid) && function_exists('posix_getgrgid') ? posix_getgrgid($effectiveGid) : false;
+    $ownerInfo = is_int($scriptOwner) && function_exists('posix_getpwuid') ? posix_getpwuid($scriptOwner) : false;
+    $ownerGroupInfo = is_int($scriptGroup) && function_exists('posix_getgrgid') ? posix_getgrgid($scriptGroup) : false;
+    return [
+        'effective_uid' => $effectiveUid,
+        'effective_user' => is_array($userInfo) ? (string)$userInfo['name'] : (string)($effectiveUid ?? 'unknown'),
+        'effective_gid' => $effectiveGid,
+        'effective_group' => is_array($groupInfo) ? (string)$groupInfo['name'] : (string)($effectiveGid ?? 'unknown'),
+        'app_owner_uid' => $scriptOwner,
+        'app_owner' => is_array($ownerInfo) ? (string)$ownerInfo['name'] : (string)($scriptOwner ?: 'unknown'),
+        'app_group_gid' => $scriptGroup,
+        'app_group' => is_array($ownerGroupInfo) ? (string)$ownerGroupInfo['name'] : (string)($scriptGroup ?: 'unknown'),
+    ];
+}
+
+function apply_runtime_permissions(string $path): void
+{
+    if (!file_exists($path)) {
+        return;
+    }
+    clearstatcache(true, $path);
+    if (is_dir($path)) {
+        @chmod($path, 02770);
+    } elseif (is_file($path)) {
+        @chmod($path, 0660);
+    }
+
+    $parent = is_dir($path) ? dirname($path) : dirname($path);
+    $gid = @filegroup($parent);
+    if ($gid !== false && function_exists('chgrp')) {
+        @chgrp($path, (int)$gid);
+    }
+}
+
 function ensure_runtime_dirs(): void
 {
     foreach (['var/uploads', 'var/generated', 'var/groups', 'var/templates', 'var/profiles', 'var/cache', 'var/log', 'config'] as $dir) {
@@ -64,6 +111,7 @@ function ensure_runtime_dirs(): void
         if (!is_dir($path)) {
             mkdir($path, 0770, true);
         }
+        apply_runtime_permissions($path);
     }
 }
 
@@ -202,7 +250,9 @@ function json_write_file(string $path, mixed $data): void
     if (file_put_contents($tmp, $json, LOCK_EX) === false) {
         throw new RuntimeException('Unable to write temporary JSON file: ' . $tmp);
     }
+    apply_runtime_permissions($tmp);
     rename($tmp, $path);
+    apply_runtime_permissions($path);
 }
 
 function list_named_json(string $dir): array
@@ -286,7 +336,9 @@ function ensure_profile_dirs(string $slug): void
         if (!is_dir($path)) {
             mkdir($path, 0770, true);
         }
+        apply_runtime_permissions($path);
     }
+    apply_runtime_permissions(profile_dir($slug));
 }
 
 function profile_data_dir(string $kind, ?string $slug = null): string
@@ -500,7 +552,7 @@ function store_uploaded_book(string $field, array $profile): array
     if (!move_uploaded_file($tmp, $target)) {
         throw new RuntimeException('Unable to store uploaded GnuCash book. Check PHP-FPM/nginx user write access to: ' . $booksDir);
     }
-    chmod($target, 0660);
+    apply_runtime_permissions($target);
     return [
         'file' => $stored,
         'original_name' => $original,

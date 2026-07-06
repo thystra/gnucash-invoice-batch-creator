@@ -116,37 +116,37 @@ Clone or initialize the repository:
 git clone https://github.com/thystra/gnucash-invoice-batch-creator.git .
 ```
 
-Create writable runtime directories:
-
-```bash
-mkdir -p var/uploads var/generated var/groups var/templates var/profiles var/cache var/log config
-chmod 750 var config
-chmod 770 var/uploads var/generated var/groups var/templates var/profiles var/cache var/log config
-```
-
-If PHP-FPM runs as `www-data`, grant write access to runtime directories. For your local `publicweb` group layout, this is the recommended setup:
+Create writable runtime directories and repair ownership/ACLs:
 
 ```bash
 cd /home/$USER/public_html/gnucash-invoice-batch-creator
-sudo chown -R "$USER":publicweb .
-sudo find var config -type d -exec chmod 2770 {} +
-sudo find var config -type f -exec chmod 0660 {} +
-sudo setfacl -R -m u:"$USER":rwx,g:publicweb:rwx var config
-sudo setfacl -R -d -m u:"$USER":rwx,g:publicweb:rwx var config
-sudo usermod -aG publicweb www-data
-sudo systemctl restart php8.5-fpm nginx
+bash bin/setup-local-permissions.sh
 ```
 
-If your PHP-FPM pool runs as `nginx` instead of `www-data`, also run:
+The helper script reclaims existing runtime files that may have been created by `www-data`, sets the project owner/group to `$USER:publicweb`, restores setgid directories, and applies default ACLs to `config/` and `var/`. This is the best repair when recursive `chmod` fails on a generated file owned by `www-data`.
+
+If PHP-FPM continues to run this app as `www-data`, new generated CSV/PDF/ZIP files will still be owned by `www-data`. ACLs and the `publicweb` group can make those files writable by your shell user, but Linux file ownership follows the process that creates the file.
+
+For a single-user local workstation setup where generated files should be owned by your user, use a dedicated PHP-FPM pool for this app:
 
 ```bash
-sudo usermod -aG publicweb nginx
-sudo systemctl restart php8.5-fpm nginx
+cd /home/$USER/public_html/gnucash-invoice-batch-creator
+sudo bash bin/install-local-fpm-pool.sh "$USER" publicweb
 ```
 
-The important bit is the setgid/default ACL combination on `var/` and `config/`. New uploaded books, generated CSVs, generated PDFs, profiles, groups, and templates should inherit group write access.
+Then update your nginx location for this app to use:
 
-For a single-user local workstation setup, you may instead run a dedicated PHP-FPM pool as your user and avoid giving `www-data` access to private files.
+```nginx
+fastcgi_pass unix:/run/php/gnucash-invoice-batch-creator.sock;
+```
+
+See `config/nginx-local-example.conf` for an example. After changing nginx, run:
+
+```bash
+sudo systemctl reload nginx
+```
+
+The important bits are: dedicated PHP-FPM pool user = your shell user, project group = `publicweb`, setgid directories, and default ACLs on `var/` and `config/`.
 
 ## Profile/entity storage layout
 
@@ -262,7 +262,7 @@ The report workflow is:
 5. Open **Reports**, select the same saved customer group, choose the date range and A/R accounts, and generate PDFs.
 6. Download the generated ZIP.
 
-The v0.1.5 report generator intentionally uses a tool-owned HTML template rendered by Chromium rather than trying to automate GnuCash's Scheme report engine for each customer. This is more reliable for bulk output and allows better pagination controls.
+The v0.1.6 report generator intentionally uses a tool-owned HTML template rendered by Chromium rather than trying to automate GnuCash's Scheme report engine for each customer. This is more reliable for bulk output and allows better pagination controls.
 
 For brand continuity, each profile can store:
 
@@ -351,10 +351,17 @@ Initial commit suggestion:
 ```bash
 git add README.md LICENSE .gitignore .github/FUNDING.yml index.html app bin config/config.example.php public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
 
-git commit -m "v0.1.5 - Export invoice prices with two decimals"
+git commit -m "v0.1.6 - Preserve runtime permissions and add local FPM setup"
 ```
 
 Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.
+
+## Runtime ownership notes
+
+Patch scripts from v0.1.6 onward are designed not to reset existing `var/` and `config/` permissions. They also remind you to run `bin/setup-local-permissions.sh` if runtime checks fail.
+
+A web application cannot create files as `$USER` while PHP-FPM is running as `www-data`. To make generated CSV files owned by `alan`, the PHP-FPM worker for this app must run as `alan`. Use `bin/install-local-fpm-pool.sh` for that local/trusted deployment model.
+
 
 ## License
 
