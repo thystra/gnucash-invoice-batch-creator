@@ -1,0 +1,60 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Local/private configuration
+config/config.php
+config/local.php
+.env
+.env.*
+!.env.example
+
+# GnuCash/private working files
+*.gnucash
+*.gnucash.*
+*.gcm
+*.sqlite
+*.sqlite3
+*.db
+*.db3
+*.sql
+*.qif
+*.ofx
+*.qfx
+*.csv.private
+*.xlsx.private
+
+# Runtime/user data
+var/uploads/*
+!var/uploads/.gitkeep
+var/generated/*
+!var/generated/.gitkeep
+var/groups/*
+!var/groups/.gitkeep
+var/templates/*
+!var/templates/.gitkeep
+var/cache/*
+var/log/*
+
+# Python runtime
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# PHP/runtime dependencies, if later added
+vendor/
+composer.lock
+
+# Archives/builds
+*.tar
+*.tar.gz
+*.zip
+*.bak
+*.bak.*
