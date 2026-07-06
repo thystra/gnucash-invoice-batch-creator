@@ -74,6 +74,8 @@ GnuCash validates invoice import dates against the date format set in GnuCash Pr
 
 The browser form still uses ISO dates internally, but the generated CSV converts `date_opened`, line `date`, `date_posted`, and `due_date` to the configured import format.
 
+Prices and discounts are exported as explicit fixed-point decimal values with two fractional digits, such as `15.00` instead of `15`. This avoids GnuCash importing whole-dollar values as cents when decimal/locale import settings are not what the user expects.
+
 ## Requirements
 
 Designed for:
@@ -260,7 +262,7 @@ The report workflow is:
 5. Open **Reports**, select the same saved customer group, choose the date range and A/R accounts, and generate PDFs.
 6. Download the generated ZIP.
 
-The v0.1.4 report generator intentionally uses a tool-owned HTML template rendered by Chromium rather than trying to automate GnuCash's Scheme report engine for each customer. This is more reliable for bulk output and allows better pagination controls.
+The v0.1.5 report generator intentionally uses a tool-owned HTML template rendered by Chromium rather than trying to automate GnuCash's Scheme report engine for each customer. This is more reliable for bulk output and allows better pagination controls.
 
 For brand continuity, each profile can store:
 
@@ -312,7 +314,7 @@ The generated file follows GnuCash's invoice/bill import column order:
 id,date_opened,owner_id,billingid,notes,date,desc,action,account,quantity,price,disc_type,disc_how,discount,taxable,taxincluded,tax_table,date_posted,due_date,account_posted,memo_posted,accu_splits
 ```
 
-The generated file intentionally omits a header row because GnuCash expects invoice entry rows.
+The generated file intentionally omits a header row because GnuCash expects invoice entry rows. The `price` and `discount` fields are emitted with two decimal places, for example `15.00`, to make amounts explicit for GnuCash import.
 
 ## Command-line checks
 
@@ -349,7 +351,7 @@ Initial commit suggestion:
 ```bash
 git add README.md LICENSE .gitignore .github/FUNDING.yml index.html app bin config/config.example.php public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
 
-git commit -m "v0.1.4 - Improve account selection and GnuCash import dates"
+git commit -m "v0.1.5 - Export invoice prices with two decimals"
 ```
 
 Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.

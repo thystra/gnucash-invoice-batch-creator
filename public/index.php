@@ -64,6 +64,7 @@ function page_help(): void
     echo '<li>Set import type to <strong>Invoice</strong>.</li>';
     echo '<li>For CSV format, choose <strong>Comma separated with quotes</strong> when this tool is configured for comma output. Use the semicolon option only if Settings uses semicolon output.</li>';
     echo '<li>Set the date format in this tool to match your GnuCash Preferences. Common values are <code>m/d/Y</code> for MM/DD/YYYY and <code>d/m/Y</code> for DD/MM/YYYY.</li>';
+    echo '<li>Prices and discounts are exported as fixed two-decimal values such as <code>15.00</code>, which avoids GnuCash interpreting whole-dollar values as cents under some decimal settings.</li>';
     echo '<li>In the Afterwards step, choose <strong>Do not open imported documents in tabs</strong>. Opening a large batch of invoice tabs can make GnuCash very slow or unstable.</li>';
     echo '<li>Review the preview carefully. If GnuCash reports an invalid date or invalid account, fix the tool settings/template and regenerate the CSV before importing again.</li>';
     echo '</ol></section>';
@@ -701,7 +702,7 @@ function render_params_form(array $scan): void
     render_account_select('income_account', 'Income account', (string)($params['income_account'] ?? $cfg['default_income_account']), $incomeAccounts, 'Must match an existing GnuCash income account. Suggestions are scanned from the active book.');
     render_account_select('ar_account', 'A/R account', (string)($params['ar_account'] ?? $cfg['default_ar_account']), $receivableAccounts, 'Used as account_posted when posting invoices. Suggestions are scanned from the active book.');
     field_number('quantity', 'Quantity', (float)($params['quantity'] ?? 1), 'Usually 1.');
-    field_number('price', 'Unit price', (float)($params['price'] ?? 0), 'Amount per customer.');
+    field_number('price', 'Unit price', (float)($params['price'] ?? 0), 'Amount per customer. Exported with two decimals, for example 15.00.');
     field_number('discount', 'Discount', (float)($params['discount'] ?? 0), 'Normally 0.');
     field_text('tax_table', 'Tax table', (string)($params['tax_table'] ?? $cfg['default_tax_table']), 'Leave blank for no tax table.');
     field_text('memo_posted', 'Posted memo', (string)($params['memo_posted'] ?? 'Posted by batch invoice creator'), 'Used only when posted.');

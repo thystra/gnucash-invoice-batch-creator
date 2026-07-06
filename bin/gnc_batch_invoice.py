@@ -520,6 +520,20 @@ def decimal_string(value: Any, default: str = "0") -> str:
     return s or "0"
 
 
+def money_string(value: Any, default: str = "0") -> str:
+    """Return a money-style decimal string with exactly two fractional digits.
+
+    GnuCash invoice import is sensitive to locale/decimal settings. Exporting
+    prices as explicit fixed-point values, e.g. 15.00 instead of 15, avoids
+    cases where whole-dollar prices are interpreted as cents.
+    """
+    try:
+        dec = Decimal(str(value).strip() or default)
+    except (InvalidOperation, ValueError):
+        dec = Decimal(default)
+    return format(dec.quantize(Decimal("0.01")), "f")
+
+
 def yn(value: bool) -> str:
     return "Y" if bool(value) else "N"
 
@@ -624,10 +638,10 @@ def generate_json(args: argparse.Namespace) -> None:
             str(params.get("action") or "ea"),
             str(params.get("income_account") or ""),
             decimal_string(params.get("quantity", "1"), "1"),
-            decimal_string(params.get("price", "0"), "0"),
+            money_string(params.get("price", "0"), "0"),
             "%" if decimal_string(params.get("discount", "0"), "0") != "0" else "",
             "=" if decimal_string(params.get("discount", "0"), "0") != "0" else "",
-            decimal_string(params.get("discount", "0"), "0"),
+            money_string(params.get("discount", "0"), "0"),
             yn(taxable),
             yn(taxincluded),
             str(params.get("tax_table") or ""),
