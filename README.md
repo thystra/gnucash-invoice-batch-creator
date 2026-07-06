@@ -140,13 +140,56 @@ Then update your nginx location for this app to use:
 fastcgi_pass unix:/run/php/gnucash-invoice-batch-creator.sock;
 ```
 
-See `config/nginx-local-example.conf` for an example. After changing nginx, run:
+See `config/nginx-local-example.conf` for examples. After changing nginx, run:
 
 ```bash
+sudo nginx -t
 sudo systemctl reload nginx
 ```
 
 The important bits are: dedicated PHP-FPM pool user = your shell user, project group = `publicweb`, setgid directories, and default ACLs on `var/` and `config/`.
+
+### Choosing the PHP-FPM `open_basedir` scope
+
+The default `bin/install-local-fpm-pool.sh` behavior is intentionally strict: it limits PHP to the current clone path. That is safest for a single app, but it is awkward when you test multiple local GnuCash tools side by side.
+
+For a local/trusted workstation, you can broaden the allowed root to all of `public_html`:
+
+```bash
+cd /home/$USER/public_html/invoices
+sudo bash bin/install-local-fpm-pool.sh "$USER" publicweb 8.5 "$(pwd)" public_html
+```
+
+That makes the pool allow:
+
+```text
+/home/$USER/public_html
+```
+
+and all subdirectories.
+
+A cleaner middle ground for the invoice tool plus the vendor/bill import tool is a shared parent directory:
+
+```text
+/home/$USER/public_html/gnucashtools/invoices
+/home/$USER/public_html/gnucashtools/bills
+```
+
+For that layout, install one shared PHP-FPM pool:
+
+```bash
+mkdir -p /home/$USER/public_html/gnucashtools/{invoices,bills}
+cd /home/$USER/public_html/gnucashtools/invoices
+sudo bash bin/install-gnucash-tools-fpm-pool.sh "$USER" publicweb 8.5 /home/$USER/public_html/gnucashtools
+```
+
+Then both GnuCash tools can use:
+
+```nginx
+fastcgi_pass unix:/run/php/gnucash-tools.sock;
+```
+
+You still need separate nginx `location` blocks for each URL path, because nginx must map `/gnucashtools/invoices/` and `/gnucashtools/bills/` to different filesystem directories. The PHP-FPM pool/socket can be shared; the nginx URL-to-file mapping cannot be shared unless both tools have the same document root.
 
 ## Profile/entity storage layout
 
@@ -351,7 +394,7 @@ Initial commit suggestion:
 ```bash
 git add README.md LICENSE .gitignore .github/FUNDING.yml index.html index.php app bin config/config.example.php config/nginx-local-example.conf public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
 
-git commit -m "v0.1.9 - Fix PHP-FPM open_basedir for alternate clone paths"
+git commit -m "v0.1.10 - Add shared GnuCash tools PHP-FPM setup"
 ```
 
 Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.
@@ -382,7 +425,25 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-For a quick manual repair, edit `/etc/php/8.5/fpm/pool.d/gnucash-invoice-batch-creator.conf` and make the first path in `open_basedir` match the actual clone path:
+For local/trusted development where multiple tools live under `public_html`, you can instead broaden the pool to `/home/alan/public_html`:
+
+```bash
+cd /home/alan/public_html/invoices
+sudo bash bin/install-local-fpm-pool.sh alan publicweb 8.5 "$(pwd)" public_html
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+For the recommended shared GnuCash tools layout, use:
+
+```bash
+cd /home/alan/public_html/gnucashtools/invoices
+sudo bash bin/install-gnucash-tools-fpm-pool.sh alan publicweb 8.5 /home/alan/public_html/gnucashtools
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+For a quick manual repair, edit `/etc/php/8.5/fpm/pool.d/gnucash-invoice-batch-creator.conf` and make the first path in `open_basedir` match the actual clone path or its trusted parent directory:
 
 ```ini
 php_admin_value[open_basedir] = /home/alan/public_html/invoices:/tmp:/usr/bin:/bin:/snap/bin:/var/lib/snapd/snap/bin:/run/php
@@ -396,6 +457,25 @@ sudo systemctl reload nginx
 ```
 
 The `/snap/bin` entries are included so the Settings page can detect Ubuntu's snap Chromium path.
+
+
+## Shared GnuCash tools layout
+
+For a local/trusted workstation that hosts this invoice tool and the vendor/bill import tool together, the recommended layout is:
+
+```text
+/home/$USER/public_html/gnucashtools/invoices
+/home/$USER/public_html/gnucashtools/bills
+```
+
+Use one shared PHP-FPM pool only if both tools are trusted and should run as the same local user. The shared helper creates `/run/php/gnucash-tools.sock` and sets `open_basedir` to the shared parent directory, not to only one clone.
+
+```bash
+cd /home/$USER/public_html/gnucashtools/invoices
+sudo bash bin/install-gnucash-tools-fpm-pool.sh "$USER" publicweb 8.5 /home/$USER/public_html/gnucashtools
+```
+
+The nginx config still needs separate `location` blocks for `/gnucashtools/invoices/` and `/gnucashtools/bills/`. See `config/nginx-local-example.conf`.
 
 ## License
 
