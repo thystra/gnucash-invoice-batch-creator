@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const APP_NAME = 'GnuCash Invoice Batch Creator';
-const APP_VERSION = '0.1.12';
+const APP_VERSION = '0.1.15';
 define('BASE_PATH', dirname(__DIR__));
 define('CONFIG_PATH', BASE_PATH . '/config/config.php');
 define('CONFIG_EXAMPLE_PATH', BASE_PATH . '/config/config.example.php');
@@ -40,11 +40,15 @@ function app_config(?string $key = null, mixed $default = null): mixed
 
 function write_config(array $newConfig): void
 {
+    global $config;
     $php = "<?php\nreturn " . var_export($newConfig, true) . ";\n";
     if (file_put_contents(CONFIG_PATH, $php, LOCK_EX) === false) {
         throw new RuntimeException('Unable to write config/config.php. Check permissions.');
     }
     apply_runtime_permissions(CONFIG_PATH);
+    // Keep in-request config reads consistent after a settings save or any
+    // action that updates global defaults before redirecting/rendering.
+    $config = $newConfig;
 }
 
 function update_config(array $changes): void
@@ -555,6 +559,10 @@ function profile_report_settings(?array $profile = null): array
         'style_reference_file' => '',
         'logo_file' => '',
         'custom_css' => '',
+        'filename_template' => '{customer} - {date_to} - {text}',
+        'filename_customer_source' => 'billing_name',
+        'filename_text' => 'statement',
+        'filename_date_format' => 'Y-m-d',
     ], $settings);
 }
 

@@ -75,3 +75,4 @@ details > summary::marker { color: var(--accent); }
 .runtime-table code { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 .status-cell .badge, .badge { white-space: nowrap; }
 .status-cell .help { margin-top: 0.25rem; }
+.filename-preview { border: 1px solid var(--line); border-radius: 8px; padding: 0.55rem; min-height: 2.35rem; background: rgba(127,127,127,.06); overflow-wrap: anywhere; }

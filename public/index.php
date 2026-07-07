@@ -33,6 +33,8 @@ try {
         'save_report_settings' => action_save_report_settings(),
         'generate_reports' => action_generate_reports(),
         'download_report_zip' => action_download_report_zip(),
+        'delete_report_batch' => action_delete_report_batch(),
+        'clean_reports' => action_clean_reports(),
         'delete_group' => action_delete_named(profile_data_dir('groups'), 'groups'),
         'delete_template' => action_delete_named(profile_data_dir('templates'), 'templates'),
         'download' => action_download(),
@@ -197,9 +199,9 @@ function render_profiles_manager(array $profiles): void
         $activeBook = (string)($profile['active_book'] ?? '');
         echo '<tr><td><strong>' . h($profile['name']) . '</strong>' . ($isActive ? ' <span class="badge">active</span>' : '') . '</td><td>' . h($bookCount) . '</td><td>' . h($activeBook ?: '(none)') . '</td><td>';
         echo '<form class="inline" method="post" action="?action=delete_profile" onsubmit="return confirm(\'Delete this profile and all of its uploaded books, groups, templates, uploads, and generated CSVs?\')">' . csrf_field() . '<input type="hidden" name="slug" value="' . h($profile['slug']) . '"><button class="danger" type="submit">Delete profile</button></form>';
-        echo '</td></tr>';
-    }
-    echo '</table>';
+            echo '</td></tr>';
+        }
+        echo '</table>';
     echo '</section>';
 
     if ($active) {
@@ -256,39 +258,57 @@ function render_book_scan_result(): void
     echo '</section>';
 }
 
+function posted_text_value(string $key, string $fallback): string
+{
+    if (!array_key_exists($key, $_POST)) {
+        return $fallback;
+    }
+    $value = trim((string)$_POST[$key]);
+    return $value !== '' ? $value : $fallback;
+}
+
 function action_save_config(): never
 {
     check_csrf();
     ensure_runtime_dirs();
-    $activeProfile = trim((string)($_POST['active_profile'] ?? app_config('active_profile', '')));
-    $postedChromium = trim((string)($_POST['chromium_bin'] ?? '/snap/bin/chromium'));
+    $current = app_config();
+    $activeProfile = posted_text_value('active_profile', (string)($current['active_profile'] ?? ''));
+    $postedChromium = posted_text_value('chromium_bin', (string)($current['chromium_bin'] ?? '/snap/bin/chromium'));
     $chromiumDetection = detect_chromium_binary($postedChromium);
     $chromiumToStore = !empty($chromiumDetection['ok']) ? (string)$chromiumDetection['path'] : $postedChromium;
-    $new = [
+
+    // Preserve existing keys that may have been added by newer versions or local
+    // customization. Only replace fields that are actually controlled by this form.
+    // For account fields, never fall back to hard-coded defaults when the browser
+    // submits an empty value; keep the current saved value instead.
+    $changes = [
         'active_profile' => $activeProfile,
-        'gnucash_book_path' => (string)app_config('gnucash_book_path', ''),
-        'python_bin' => trim((string)($_POST['python_bin'] ?? '/usr/bin/python3')),
+        'gnucash_book_path' => (string)($current['gnucash_book_path'] ?? ''),
+        'python_bin' => posted_text_value('python_bin', (string)($current['python_bin'] ?? '/usr/bin/python3')),
         'chromium_bin' => $chromiumToStore,
-        'default_income_account' => trim((string)($_POST['default_income_account'] ?? 'Income:Dues')),
-        'default_ar_account' => trim((string)($_POST['default_ar_account'] ?? 'Assets:Accounts Receivable')),
+        'default_income_account' => posted_text_value('default_income_account', (string)($current['default_income_account'] ?? 'Income:Dues')),
+        'default_ar_account' => posted_text_value('default_ar_account', (string)($current['default_ar_account'] ?? 'Assets:Accounts Receivable')),
         'default_posted' => isset($_POST['default_posted']),
-        'default_action' => trim((string)($_POST['default_action'] ?? 'ea')),
+        'default_action' => posted_text_value('default_action', (string)($current['default_action'] ?? 'ea')),
         'default_taxable' => isset($_POST['default_taxable']),
         'default_taxincluded' => isset($_POST['default_taxincluded']),
-        'default_tax_table' => trim((string)($_POST['default_tax_table'] ?? '')),
-        'id_prefix' => trim((string)($_POST['id_prefix'] ?? '')),
-        'id_padding' => max(0, (int)($_POST['id_padding'] ?? 0)),
-        'csv_delimiter' => in_array(($_POST['csv_delimiter'] ?? ','), [',', ';'], true) ? (string)$_POST['csv_delimiter'] : ',',
-        'csv_date_format' => trim((string)($_POST['csv_date_format'] ?? 'm/d/Y')),
-        'timezone' => trim((string)($_POST['timezone'] ?? 'America/New_York')),
+        'default_tax_table' => trim((string)($_POST['default_tax_table'] ?? (string)($current['default_tax_table'] ?? ''))),
+        'id_prefix' => trim((string)($_POST['id_prefix'] ?? (string)($current['id_prefix'] ?? ''))),
+        'id_padding' => max(0, (int)($_POST['id_padding'] ?? (int)($current['id_padding'] ?? 0))),
+        'csv_delimiter' => in_array(($_POST['csv_delimiter'] ?? ($current['csv_delimiter'] ?? ',')), [',', ';'], true) ? (string)($_POST['csv_delimiter'] ?? $current['csv_delimiter'] ?? ',') : ',',
+        'csv_date_format' => posted_text_value('csv_date_format', (string)($current['csv_date_format'] ?? 'm/d/Y')),
+        'timezone' => posted_text_value('timezone', (string)($current['timezone'] ?? 'America/New_York')),
     ];
+    $new = array_replace($current, $changes);
     write_config($new);
+
+    $accountMessage = ' Default income account: ' . $changes['default_income_account'] . '; default A/R account: ' . $changes['default_ar_account'] . '.';
     if (!empty($chromiumDetection['ok']) && $postedChromium !== $chromiumToStore) {
-        flash('warn', 'Chromium was not executable at the configured path. Saved detected Chromium path: ' . $chromiumToStore);
+        flash('warn', 'Settings saved, but Chromium was not executable at the configured path. Saved detected Chromium path: ' . $chromiumToStore . '.' . $accountMessage);
     } elseif (empty($chromiumDetection['ok'])) {
-        flash('warn', 'Settings saved, but Chromium was not found. Customer Report PDFs will fail until Chromium is installed or the correct path is set.');
+        flash('warn', 'Settings saved, but Chromium was not found. Customer Report PDFs will fail until Chromium is installed or the correct path is set.' . $accountMessage);
     } else {
-        flash('ok', 'Settings saved.');
+        flash('ok', 'Settings saved.' . $accountMessage);
     }
     redirect_to('config');
 }
@@ -449,33 +469,34 @@ function account_options_from_scan(array $scanJson, string $key): array
 
 function render_account_select(string $name, string $label, string $value, array $accounts, string $help = ''): void
 {
-    if (!$accounts) {
-        field_text($name, $label, $value, $help . ' No matching accounts were detected in the active book; enter the full GnuCash account path manually.');
-        return;
-    }
+    $listId = $name . '_account_suggestions';
     $known = [];
     foreach ($accounts as $account) {
         $full = (string)($account['full_name'] ?? $account['name'] ?? '');
         if ($full !== '') {
-            $known[$full] = true;
+            $known[$full] = (string)($account['account_type'] ?? '');
         }
     }
-    echo '<div><label for="' . h($name) . '">' . h($label) . '</label><select id="' . h($name) . '" name="' . h($name) . '">';
-    if ($value !== '' && !isset($known[$value])) {
-        echo '<option value="' . h($value) . '" selected>' . h($value) . ' (configured; not detected)</option>';
+
+    echo '<div><label for="' . h($name) . '">' . h($label) . '</label>';
+    echo '<input type="text" id="' . h($name) . '" name="' . h($name) . '" value="' . h($value) . '" list="' . h($listId) . '" autocomplete="off">';
+    echo '<datalist id="' . h($listId) . '">';
+    foreach ($known as $full => $type) {
+        $labelText = $type !== '' ? $full . ' [' . $type . ']' : $full;
+        echo '<option value="' . h($full) . '" label="' . h($labelText) . '"></option>';
     }
-    foreach ($accounts as $account) {
-        $full = (string)($account['full_name'] ?? $account['name'] ?? '');
-        if ($full === '') {
-            continue;
-        }
-        $type = (string)($account['account_type'] ?? '');
-        $selected = $full === $value ? ' selected' : '';
-        echo '<option value="' . h($full) . '"' . $selected . '>' . h($full) . ($type !== '' ? ' [' . h($type) . ']' : '') . '</option>';
+    echo '</datalist>';
+
+    $extra = '';
+    if (!$accounts) {
+        $extra = ' No matching accounts were detected in the active book; enter the full GnuCash account path manually.';
+    } elseif ($value !== '' && !isset($known[$value])) {
+        $extra = ' Current configured value was not detected in the active book; it will still be submitted unless changed.';
+    } else {
+        $extra = ' You may select a scanned account or type the exact GnuCash account path.';
     }
-    echo '</select>';
-    if ($help !== '') {
-        echo '<div class="help">' . h($help) . '</div>';
+    if ($help !== '' || $extra !== '') {
+        echo '<div class="help">' . h(trim($help . ' ' . $extra)) . '</div>';
     }
     echo '</div>';
 }
@@ -722,6 +743,7 @@ function render_params_form(array $scan): void
     echo '<label class="check"><input type="checkbox" name="taxable" value="1" ' . ((bool)($params['taxable'] ?? $cfg['default_taxable']) ? 'checked' : '') . '> Taxable</label>';
     echo '<label class="check"><input type="checkbox" name="taxincluded" value="1" ' . ((bool)($params['taxincluded'] ?? $cfg['default_taxincluded']) ? 'checked' : '') . '> Tax included</label>';
     echo '<label class="check"><input type="checkbox" name="accu_splits" value="1" ' . ((bool)($params['accu_splits'] ?? false) ? 'checked' : '') . '> Accumulate splits when posting</label>';
+    echo '<label class="check"><input type="checkbox" name="save_as_defaults" value="1"> Save these invoice accounts and common values as global defaults</label>';
     echo '<div class="grid">';
     field_text('save_group_name', 'Save/update customer group name', '', 'Optional. Saves the matched customers for reuse under the active entity.');
     field_text('save_template_name', 'Save/update template name', '', 'Optional. Saves these invoice settings under the active entity.');
@@ -764,6 +786,19 @@ function action_generate(): never
         'csv_delimiter' => (string)app_config('csv_delimiter', ','),
         'csv_date_format' => (string)app_config('csv_date_format', 'm/d/Y'),
     ];
+
+    if (isset($_POST['save_as_defaults'])) {
+        update_config([
+            'default_income_account' => $params['income_account'],
+            'default_ar_account' => $params['ar_account'],
+            'default_action' => $params['action'],
+            'default_tax_table' => $params['tax_table'],
+            'default_posted' => (bool)$params['posted'],
+            'default_taxable' => (bool)$params['taxable'],
+            'default_taxincluded' => (bool)$params['taxincluded'],
+        ]);
+        flash('ok', 'Updated global invoice defaults from this batch.');
+    }
 
     $saveGroup = trim((string)($_POST['save_group_name'] ?? ''));
     if ($saveGroup !== '') {
@@ -1101,6 +1136,88 @@ function action_download(): never
 }
 
 
+function report_filename_preview_php(array $settings, array $customer, string $dateFrom = '', string $dateTo = '', string $group = ''): string
+{
+    $template = (string)($settings['filename_template'] ?? '{customer} - {date_to} - {text}');
+    $source = (string)($settings['filename_customer_source'] ?? 'billing_name');
+    $dateFormat = (string)($settings['filename_date_format'] ?? 'Y-m-d');
+    $text = (string)($settings['filename_text'] ?? 'statement');
+    $dateFrom = $dateFrom !== '' ? report_format_filename_date_php($dateFrom, $dateFormat) : report_format_filename_date_php(date('Y-01-01'), $dateFormat);
+    $dateTo = $dateTo !== '' ? report_format_filename_date_php($dateTo, $dateFormat) : report_format_filename_date_php(date('Y-m-d'), $dateFormat);
+    $selectedCustomer = match ($source) {
+        'customer_number', 'customer_id' => (string)($customer['id'] ?? ''),
+        'company_name' => (string)($customer['name'] ?? $customer['id'] ?? ''),
+        'billing_name' => (string)($customer['billing_name'] ?? $customer['name'] ?? $customer['id'] ?? ''),
+        default => (string)($customer['billing_name'] ?? $customer['name'] ?? $customer['id'] ?? ''),
+    };
+    $values = [
+        'customer' => $selectedCustomer,
+        'customer_id' => (string)($customer['id'] ?? ''),
+        'customer_number' => (string)($customer['id'] ?? ''),
+        'company_name' => (string)($customer['name'] ?? ''),
+        'name' => (string)($customer['name'] ?? ''),
+        'billing_name' => (string)($customer['billing_name'] ?? ''),
+        'date' => $dateTo,
+        'date_to' => $dateTo,
+        'date_from' => $dateFrom,
+        'group' => $group,
+        'text' => $text,
+    ];
+    $rendered = preg_replace_callback('/\{([A-Za-z0-9_ -]+)\}/', static function (array $m) use ($values): string {
+        $key = strtolower(trim((string)$m[1]));
+        return (string)($values[$key] ?? '');
+    }, $template) ?? $template;
+    return report_safe_filename_php($rendered) . '.pdf';
+}
+
+function report_format_filename_date_php(string $value, string $format): string
+{
+    $ts = strtotime($value);
+    if ($ts === false) {
+        return $value;
+    }
+    $format = trim($format) !== '' ? $format : 'Y-m-d';
+    $aliases = [
+        'yyyy-mm-dd' => 'Y-m-d',
+        'mm-dd-yyyy' => 'm-d-Y',
+        'dd-mm-yyyy' => 'd-m-Y',
+        'mm/dd/yyyy' => 'm/d/Y',
+        'dd/mm/yyyy' => 'd/m/Y',
+    ];
+    $format = $aliases[strtolower($format)] ?? $format;
+    return date($format, $ts);
+}
+
+function report_safe_filename_php(string $value): string
+{
+    $clean = trim((string)$value);
+    $clean = preg_replace('/[<>:"\\\/|?*\x00-\x1F]+/', '-', $clean) ?? $clean;
+    $clean = preg_replace('/\s+/', ' ', $clean) ?? $clean;
+    $clean = trim($clean, " .-_");
+    return $clean !== '' ? substr($clean, 0, 180) : 'customer';
+}
+
+function remove_tree(string $dir): void
+{
+    if (!is_dir($dir)) {
+        return;
+    }
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::CHILD_FIRST
+    );
+    foreach ($it as $item) {
+        $path = $item->getPathname();
+        if ($item->isDir()) {
+            @rmdir($path);
+        } else {
+            @unlink($path);
+        }
+    }
+    @rmdir($dir);
+}
+
+
 function page_reports(): void
 {
     $profile = require_profile_configured();
@@ -1115,6 +1232,13 @@ function page_reports(): void
     if ($metadata['ok'] && is_array($metadata['json'])) {
         $arAccounts = $metadata['json']['ar_accounts'] ?? [];
     }
+    $scan = run_python(['scan-book', '--book', $book]);
+    $previewCustomers = [];
+    if ($scan['ok'] && is_array($scan['json'])) {
+        $previewCustomers = is_array($scan['json']['customers'] ?? null) ? $scan['json']['customers'] : [];
+        usort($previewCustomers, fn($a, $b) => strcasecmp((string)($a['name'] ?? $a['id'] ?? ''), (string)($b['name'] ?? $b['id'] ?? '')));
+    }
+    $previewCustomer = $previewCustomers[0] ?? ['id' => '000001', 'name' => 'Example Customer', 'billing_name' => 'Example Billing Name'];
 
     echo '<section class="card"><h2>Report appearance</h2>';
     echo '<p class="help">The tool uses a GnuCash-like customer report layout and renders PDFs with Chromium. To keep the same look and feel as your manual reports, export one GnuCash Customer Report as HTML and upload it here as a style reference. CSS found in that HTML will be layered into the tool-owned report template.</p>';
@@ -1131,7 +1255,80 @@ function page_reports(): void
     echo '<div><label for="style_reference_file">GnuCash exported HTML style reference</label><input type="file" id="style_reference_file" name="style_reference_file" accept=".html,.htm"><div class="help">Optional. Export one manually formatted Customer Report from GnuCash as HTML and upload it here. Existing: ' . h((string)($settings['style_reference_file'] ?: '(none)')) . '</div></div>';
     echo '</div>';
     echo '<label for="custom_css">Custom CSS</label><textarea id="custom_css" name="custom_css" rows="8">' . h((string)$settings['custom_css']) . '</textarea>';
+
+    echo '<details open><summary><strong>Report file naming</strong></summary>';
+    echo '<p class="help">Choose how individual report PDF files are named. Use the template dropdowns or enter a custom pattern. Variables: <code>{customer}</code>, <code>{customer_id}</code>, <code>{customer_number}</code>, <code>{company_name}</code>, <code>{billing_name}</code>, <code>{date}</code>, <code>{date_to}</code>, <code>{date_from}</code>, <code>{group}</code>, <code>{text}</code>.</p>';
+    echo '<div class="grid">';
+    echo '<div><label for="filename_customer_source">Customer value for {customer}</label><select id="filename_customer_source" name="filename_customer_source">';
+    foreach (["billing_name" => "Billing Address Name", "company_name" => "Company Name", "customer_number" => "Customer Number"] as $val => $label) {
+        echo '<option value="' . h($val) . '"' . ((string)$settings['filename_customer_source'] === $val ? ' selected' : '') . '>' . h($label) . '</option>';
+    }
+    echo '</select></div>';
+    field_text('filename_template', 'Filename template', (string)$settings['filename_template'], 'Recommended: {customer} - {date_to} - {text}');
+    field_text('filename_text', 'Filename text value', (string)$settings['filename_text'], 'Example: statement, dues, invoice-summary. Used by {text}.');
+    field_text('filename_date_format', 'Filename date format', (string)$settings['filename_date_format'], 'Examples: Y-m-d, m-d-Y, m/d/Y. Used by {date}, {date_to}, and {date_from}.');
+    echo '<div><label for="filename_preview_customer">Preview against customer</label><select id="filename_preview_customer">';
+    foreach ($previewCustomers as $cust) {
+        $label = trim((string)($cust['id'] ?? '') . ' - ' . (string)($cust['name'] ?? ''));
+        echo '<option value="' . h((string)($cust['id'] ?? '')) . '" data-customer-id="' . h((string)($cust['id'] ?? '')) . '" data-company-name="' . h((string)($cust['name'] ?? '')) . '" data-billing-name="' . h((string)($cust['billing_name'] ?? '')) . '">' . h($label) . '</option>';
+    }
+    if (!$previewCustomers) {
+        echo '<option value="000001" data-customer-id="000001" data-company-name="Example Customer" data-billing-name="Example Billing Name">000001 - Example Customer</option>';
+    }
+    echo '</select><div class="help">This preview does not save the selected customer; it only tests the naming pattern.</div></div>';
+    echo '<div><label>Filename preview</label><div id="filename_preview" class="filename-preview"><code>' . h(report_filename_preview_php($settings, $previewCustomer)) . '</code></div></div>';
+    echo '</div></details>';
+
     echo '<label class="check"><input type="checkbox" name="include_zero_balance" value="1" ' . (!empty($settings['include_zero_balance']) ? 'checked' : '') . '> Include zero-balance accounts/customers</label>';
+    echo '<script>
+(function(){
+  const template = document.getElementById("filename_template");
+  const source = document.getElementById("filename_customer_source");
+  const text = document.getElementById("filename_text");
+  const fmt = document.getElementById("filename_date_format");
+  const cust = document.getElementById("filename_preview_customer");
+  const out = document.getElementById("filename_preview");
+  function formatDate(fmtValue){
+    const d = new Date();
+    const y = String(d.getFullYear());
+    const m = String(d.getMonth()+1).padStart(2,"0");
+    const day = String(d.getDate()).padStart(2,"0");
+    return (fmtValue || "Y-m-d").replace(/Y/g,y).replace(/m/g,m).replace(/d/g,day);
+  }
+  function safeName(v){
+    v = String(v || "").replace(/[<>:"\\/|?*\x00-\x1F]+/g,"-").replace(/\s+/g," ").trim().replace(/^[ ._-]+|[ ._-]+$/g,"");
+    return v || "customer";
+  }
+  function update(){
+    if(!out || !cust) return;
+    const opt = cust.selectedOptions[0];
+    const customerId = opt ? (opt.dataset.customerId || opt.value || "") : "";
+    const companyName = opt ? (opt.dataset.companyName || "") : "";
+    const billingName = opt ? (opt.dataset.billingName || "") : "";
+    let customer = billingName || companyName || customerId;
+    if(source && source.value === "company_name") customer = companyName || customerId;
+    if(source && source.value === "customer_number") customer = customerId;
+    const values = {
+      customer: customer,
+      customer_id: customerId,
+      customer_number: customerId,
+      company_name: companyName,
+      name: companyName,
+      billing_name: billingName,
+      date: formatDate(fmt ? fmt.value : "Y-m-d"),
+      date_to: formatDate(fmt ? fmt.value : "Y-m-d"),
+      date_from: formatDate(fmt ? fmt.value : "Y-m-d"),
+      group: "customer-group",
+      text: text ? text.value : "statement"
+    };
+    let v = template ? template.value : "{customer} - {date_to} - {text}";
+    v = v.replace(/\{([A-Za-z0-9_ -]+)\}/g, function(_, key){ return values[String(key).trim().toLowerCase()] || ""; });
+    out.innerHTML = "<code>" + safeName(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;") + ".pdf</code>";
+  }
+  [template, source, text, fmt, cust].forEach(el => { if(el) el.addEventListener("input", update); if(el) el.addEventListener("change", update); });
+  update();
+})();
+</script>';
     echo '<div class="actions"><button type="submit">Save report appearance</button></div></form></section>';
 
     echo '<section class="card"><h2>Generate customer report PDFs</h2>';
@@ -1184,6 +1381,11 @@ function action_save_report_settings(): never
     $settings['page_size'] = in_array(($_POST['page_size'] ?? 'Letter'), ['Letter', 'A4'], true) ? (string)$_POST['page_size'] : 'Letter';
     $settings['include_zero_balance'] = isset($_POST['include_zero_balance']);
     $settings['custom_css'] = (string)($_POST['custom_css'] ?? '');
+    $source = (string)($_POST['filename_customer_source'] ?? 'billing_name');
+    $settings['filename_customer_source'] = in_array($source, ['billing_name', 'company_name', 'customer_number'], true) ? $source : 'billing_name';
+    $settings['filename_template'] = trim((string)($_POST['filename_template'] ?? '{customer} - {date_to} - {text}')) ?: '{customer} - {date_to} - {text}';
+    $settings['filename_text'] = trim((string)($_POST['filename_text'] ?? 'statement')) ?: 'statement';
+    $settings['filename_date_format'] = trim((string)($_POST['filename_date_format'] ?? 'Y-m-d')) ?: 'Y-m-d';
 
     $assetDir = profile_dir((string)$profile['slug']) . '/report-assets';
     if (!is_dir($assetDir)) {
@@ -1273,6 +1475,10 @@ function action_generate_reports(): never
         'logo_path' => is_file($logoPath) ? $logoPath : '',
         'style_reference_path' => is_file($stylePath) ? $stylePath : '',
         'custom_css' => (string)($settings['custom_css'] ?? ''),
+        'filename_template' => (string)($settings['filename_template'] ?? '{customer} - {date_to} - {text}'),
+        'filename_customer_source' => (string)($settings['filename_customer_source'] ?? 'billing_name'),
+        'filename_text' => (string)($settings['filename_text'] ?? 'statement'),
+        'filename_date_format' => (string)($settings['filename_date_format'] ?? 'Y-m-d'),
         'chromium_bin' => (string)app_config('chromium_bin', '/snap/bin/chromium'),
     ];
     $result = run_python(['customer-reports', '--book', $book, '--out-dir', $outDir], $payload);
@@ -1300,6 +1506,50 @@ function action_download_report_zip(): never
     exit;
 }
 
+function action_delete_report_batch(): never
+{
+    check_csrf();
+    require_profile_configured();
+    $batch = basename((string)($_POST['batch'] ?? ''));
+    if ($batch === '') {
+        flash('error', 'No report batch selected.');
+        redirect_to('reports');
+    }
+    $dir = reports_batch_dir($batch);
+    $base = realpath(reports_batch_dir()) ?: reports_batch_dir();
+    $real = realpath($dir);
+    if ($real === false || !str_starts_with($real, rtrim($base, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
+        flash('error', 'Invalid report batch path.');
+        redirect_to('reports');
+    }
+    remove_tree($real);
+    flash('ok', 'Deleted report batch: ' . $batch);
+    redirect_to('reports');
+}
+
+function action_clean_reports(): never
+{
+    check_csrf();
+    $profile = require_profile_configured();
+    $confirm = (string)($_POST['confirm_clean_reports'] ?? '');
+    if ($confirm !== 'DELETE') {
+        flash('error', 'Type DELETE to clean all report output for this entity.');
+        redirect_to('reports');
+    }
+    $base = reports_batch_dir('', $profile);
+    if (is_dir($base)) {
+        $dirs = glob($base . '/*', GLOB_ONLYDIR) ?: [];
+        foreach ($dirs as $dir) {
+            remove_tree($dir);
+        }
+    }
+    ensure_runtime_dirs();
+    ensure_profile_dirs((string)$profile['slug']);
+    flash('ok', 'Cleaned all customer report output for this entity.');
+    redirect_to('reports');
+}
+
+
 function render_recent_report_batches(): void
 {
     echo '<section class="card"><h2>Recent report batches</h2>';
@@ -1307,22 +1557,29 @@ function render_recent_report_batches(): void
     $dirs = glob($base . '/*', GLOB_ONLYDIR) ?: [];
     usort($dirs, fn($a, $b) => (filemtime($b) ?: 0) <=> (filemtime($a) ?: 0));
     if (!$dirs) {
-        echo '<p>No report batches generated yet for this entity.</p></section>';
-        return;
-    }
-    echo '<table><tr><th>Batch</th><th>Generated</th><th>PDFs</th><th>Actions</th></tr>';
-    foreach (array_slice($dirs, 0, 10) as $dir) {
+        echo '<p>No report batches generated yet for this entity.</p>';
+    } else {
+        echo '<table><tr><th>Batch</th><th>Generated</th><th>PDFs</th><th>Actions</th></tr>';
+        foreach (array_slice($dirs, 0, 10) as $dir) {
         $batch = basename($dir);
         $manifest = json_read_file($dir . '/batch-manifest.json', []);
         $pdfCount = is_array($manifest) ? (int)($manifest['pdf_count'] ?? 0) : 0;
         $generated = is_array($manifest) ? (string)($manifest['generated_at'] ?? '') : '';
         echo '<tr><td><code>' . h($batch) . '</code></td><td>' . h(substr($generated, 0, 19)) . '</td><td>' . h($pdfCount) . '</td><td>';
         if (is_file($dir . '/customer-reports.zip')) {
-            echo '<a class="button secondary" href="?action=download_report_zip&batch=' . h($batch) . '">Download ZIP</a>';
+            echo '<a class="button secondary inline" href="?action=download_report_zip&batch=' . h($batch) . '">Download ZIP</a>';
         }
-        echo '</td></tr>';
+        echo '<form class="inline" method="post" action="?action=delete_report_batch" onsubmit="return confirm(&quot;Delete this report batch?&quot;)">' . csrf_field() . '<input type="hidden" name="batch" value="' . h($batch) . '"><button class="danger" type="submit">Delete</button></form>';
+            echo '</td></tr>';
+        }
+        echo '</table>';
     }
-    echo '</table></section>';
+    echo '<details><summary><strong>Clean all report output for this entity</strong></summary>';
+    echo '<p class="help">This deletes generated report HTML, PDFs, ZIP files, and manifests under this entity&rsquo;s <code>reports/customer-reports/</code> directory. It does not delete books, groups, templates, or report appearance settings.</p>';
+    echo '<form method="post" action="?action=clean_reports" onsubmit="return confirm(&quot;Delete ALL customer report output for this entity?&quot;)">' . csrf_field();
+    echo '<label for="confirm_clean_reports">Type DELETE to confirm</label><input type="text" id="confirm_clean_reports" name="confirm_clean_reports" autocomplete="off">';
+    echo '<div class="actions"><button class="danger" type="submit">Clean reports directory</button></div></form></details>';
+    echo '</section>';
 }
 
 function render_runtime_checks_compact(): void

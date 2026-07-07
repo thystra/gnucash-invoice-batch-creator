@@ -563,3 +563,41 @@ sudo systemctl restart php8.5-fpm
 - Customer group validation errors now preserve the selected checkboxes, group name, note, sort mode, and inactive-customer filter.
 - Saved customer groups can now be loaded for editing from the Groups page and saved again, including renaming a group.
 - The PHP `open_basedir` runtime check table now uses fixed-width status cells, wrapped path text, and non-wrapping status badges so the badges do not break awkwardly on long basedir values.
+
+## v0.1.13 notes
+
+- Reports can now be deleted one batch at a time from the Recent report batches table.
+- The Reports page now has a **Clean reports directory** control that deletes generated customer-report HTML, PDFs, ZIP files, and manifests for the active entity/profile without deleting books, groups, templates, or report appearance settings.
+- Report PDF filenames are configurable per entity/profile. The default convention is:
+
+```text
+{customer} - {date_to} - {text}
+```
+
+- Filename variables include `{customer}`, `{customer_id}`, `{customer_number}`, `{company_name}`, `{billing_name}`, `{date}`, `{date_to}`, `{date_from}`, `{group}`, and `{text}`.
+- `{customer}` can be configured to use Billing Address Name, Company Name, or Customer Number. SQLite GnuCash books are scanned for `customers.id`, `customers.name`, and `customers.addr_name` when available.
+- The Report Appearance form includes a filename preview tester against a selected customer from the active uploaded book.
+
+## v0.1.15 notes
+
+- Patch scripts now explicitly preserve `.git/` and do not use archive-permission sync that can remove repository metadata.
+- Added `bin/repair-git-metadata.sh` for recovery if a prior patch script removed `.git/`.
+
+### Recovering if `.git/` was removed by an older patch
+
+From the project directory:
+
+```bash
+cd ~/public_html/gnucash-invoice-batch-creator
+bash bin/repair-git-metadata.sh . https://github.com/thystra/gnucash-invoice-batch-creator.git main
+git status
+```
+
+This restores Git metadata from GitHub without resetting your working tree. Do not run `git reset --hard` unless you intentionally want to discard local patch files.
+
+## v0.1.14 notes
+
+- Account fields now use editable scan-backed suggestions rather than a closed select box. This allows a user to select scanned income/A/R accounts or type the exact GnuCash account path, and the submitted value is preserved explicitly.
+- Saving Settings now preserves existing configuration keys and uses the current saved account values as fallbacks instead of reverting to hard-coded defaults such as `Income:Dues`.
+- Settings success messages now echo the saved default income and A/R accounts so it is obvious which values were written to `config/config.php`.
+- The invoice wizard now includes an optional **Save these invoice accounts and common values as global defaults** checkbox for updating global defaults from a successful batch run.

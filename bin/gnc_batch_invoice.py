@@ -91,6 +91,7 @@ class Customer:
     name: str = ""
     active: str = ""
     guid: str = ""
+    billing_name: str = ""
 
 
 def print_json(data: Any) -> None:
@@ -141,11 +142,12 @@ def try_sqlite_book(book_path: Path) -> tuple[list[Customer], list[str]] | None:
                 name_col = "name" if "name" in columns else "''"
                 active_col = "active" if "active" in columns else "''"
                 guid_col = "guid" if "guid" in columns else "''"
-                query = f"SELECT {id_col}, {name_col}, {active_col}, {guid_col} FROM customers ORDER BY {id_col}"
+                billing_col = "addr_name" if "addr_name" in columns else "''"
+                query = f"SELECT {id_col}, {name_col}, {active_col}, {guid_col}, {billing_col} FROM customers ORDER BY {id_col}"
                 for row in cur.execute(query):
                     cid = str(row[0] or "").strip()
                     if cid:
-                        customers.append(Customer(cid, text_value(row[1]), text_value(row[2]), text_value(row[3])))
+                        customers.append(Customer(cid, text_value(row[1]), text_value(row[2]), text_value(row[3]), text_value(row[4])))
 
         invoice_ids: list[str] = []
         if "invoices" in tables:
@@ -290,6 +292,7 @@ def scan_xml_book(book_path: Path) -> tuple[list[Customer], list[str]]:
                         name=child_text(elem, "name"),
                         active=child_text(elem, "active"),
                         guid=child_text(elem, "guid"),
+                        billing_name=child_text(elem, "addr-name") or child_text(elem, "billing_name"),
                     )
                 )
         elif lname == "GncInvoice":
@@ -370,6 +373,7 @@ def customers_to_json(customers: list[Customer]) -> list[dict[str, Any]]:
             "active": c.active,
             "active_bool": customer_is_active(c.active),
             "guid": c.guid,
+            "billing_name": c.billing_name,
         }
         for c in customers
     ]
@@ -860,8 +864,14 @@ def load_report_data(con: sqlite3.Connection, customer_ids: list[str], date_from
     customers_by_guid: dict[str, dict[str, Any]] = {}
     customer_cols = table_columns(cur, "customers")
     name_expr = "name" if "name" in customer_cols else "id"
-    for row in cur.execute(f"SELECT guid, id, {name_expr} AS name FROM customers"):
-        item = {"guid": row["guid"], "id": str(row["id"]), "name": str(row["name"] or row["id"])}
+    billing_expr = "addr_name" if "addr_name" in customer_cols else "''"
+    for row in cur.execute(f"SELECT guid, id, {name_expr} AS name, {billing_expr} AS billing_name FROM customers"):
+        item = {
+            "guid": row["guid"],
+            "id": str(row["id"]),
+            "name": str(row["name"] or row["id"]),
+            "billing_name": str(row["billing_name"] or ""),
+        }
         customers_by_id[item["id"]] = item
         customers_by_guid[item["guid"]] = item
 
@@ -983,7 +993,7 @@ def first_invoice_description(cur: sqlite3.Cursor, invoice_guid: str) -> str:
 
 
 def add_report_row(by_customer: dict[str, dict[str, Any]], cust: dict[str, Any], acct: str, acct_name: str, row_item: dict[str, Any]) -> None:
-    c = by_customer.setdefault(cust["id"], {"id": cust["id"], "name": cust["name"], "accounts": {}})
+    c = by_customer.setdefault(cust["id"], {"id": cust["id"], "name": cust["name"], "billing_name": cust.get("billing_name", ""), "accounts": {}})
     a = c["accounts"].setdefault(acct, {"guid": acct, "name": acct_name, "rows": []})
     a["rows"].append(row_item)
 
@@ -1086,8 +1096,62 @@ def extract_style_reference(path: str) -> str:
 
 
 def safe_filename(value: str) -> str:
-    clean = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
-    return clean.strip("-._") or "customer"
+    clean = str(value or "").strip()
+    clean = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', "-", clean)
+    clean = re.sub(r"\s+", " ", clean)
+    clean = re.sub(r"-{3,}", "--", clean)
+    clean = clean.strip(" .-_")
+    if not clean:
+        clean = "customer"
+    return clean[:180]
+
+
+def filename_customer_value(customer: dict[str, Any], source: str) -> str:
+    source = str(source or "billing_name").strip().lower()
+    if source in {"customer_id", "customer_number", "id", "number"}:
+        return str(customer.get("id") or "")
+    if source in {"company_name", "company", "name"}:
+        return str(customer.get("name") or customer.get("id") or "")
+    if source in {"billing_name", "billing", "addr_name"}:
+        return str(customer.get("billing_name") or customer.get("name") or customer.get("id") or "")
+    return str(customer.get("billing_name") or customer.get("name") or customer.get("id") or "")
+
+
+def filename_date(value: Any, fmt: str) -> str:
+    dt = parse_form_date(value)
+    if dt is None:
+        return str(value or "")
+    return dt.strftime(normalize_date_format(fmt or "Y-m-d"))
+
+
+def render_report_filename(customer: dict[str, Any], payload: dict[str, Any]) -> str:
+    template = str(payload.get("filename_template") or "{customer} - {date_to} - {text}")
+    source = str(payload.get("filename_customer_source") or "billing_name")
+    date_fmt = str(payload.get("filename_date_format") or "Y-m-d")
+    date_from = filename_date(payload.get("date_from", ""), date_fmt)
+    date_to = filename_date(payload.get("date_to", ""), date_fmt)
+    selected_customer = filename_customer_value(customer, source)
+    values = {
+        "customer": selected_customer,
+        "customer_id": str(customer.get("id") or ""),
+        "customer_number": str(customer.get("id") or ""),
+        "company_name": str(customer.get("name") or ""),
+        "name": str(customer.get("name") or ""),
+        "billing_name": str(customer.get("billing_name") or ""),
+        "date": date_to,
+        "date_to": date_to,
+        "date_from": date_from,
+        "group": str(payload.get("group_name") or ""),
+        "text": str(payload.get("filename_text") or "statement"),
+    }
+
+    def repl(match: re.Match[str]) -> str:
+        key = match.group(1).strip().lower()
+        return values.get(key, "")
+
+    rendered = re.sub(r"\{([A-Za-z0-9_ -]+)\}", repl, template)
+    rendered = re.sub(r"\s+", " ", rendered).strip()
+    return safe_filename(rendered)
 
 
 def chromium_candidates(configured: str = "") -> list[str]:
@@ -1174,12 +1238,19 @@ def customer_reports_json(args: argparse.Namespace) -> None:
 
     include_zero = bool(payload.get("include_zero_balance", True))
     generated: list[dict[str, Any]] = []
+    used_names: set[str] = set()
     for customer in data["customers"]:
         # Skip customers with no account sections unless requested. At this stage no-row customers are not present.
         html = render_customer_html(customer, payload, style_css)
-        base = safe_filename(f"{customer['id']}-{customer['name']}")
-        html_path = html_dir / f"{base}.html"
-        pdf_path = pdf_dir / f"{base}.pdf"
+        base = render_report_filename(customer, payload)
+        unique_base = base
+        n = 2
+        while unique_base.lower() in used_names:
+            unique_base = safe_filename(f"{base} ({n})")
+            n += 1
+        used_names.add(unique_base.lower())
+        html_path = html_dir / f"{unique_base}.html"
+        pdf_path = pdf_dir / f"{unique_base}.pdf"
         html_path.write_text(html, encoding="utf-8")
         apply_runtime_permissions(html_path)
         if not include_zero:
@@ -1191,7 +1262,7 @@ def customer_reports_json(args: argparse.Namespace) -> None:
                 continue
         render_pdf(str(payload.get("chromium_bin") or ""), html_path, pdf_path)
         apply_runtime_permissions(pdf_path)
-        generated.append({"customer_id": customer["id"], "customer_name": customer["name"], "html": str(html_path), "pdf": str(pdf_path), "status": "generated"})
+        generated.append({"customer_id": customer["id"], "customer_name": customer["name"], "billing_name": customer.get("billing_name", ""), "html": str(html_path), "pdf": str(pdf_path), "status": "generated"})
 
     zip_path = out_dir / "customer-reports.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
