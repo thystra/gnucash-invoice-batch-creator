@@ -228,7 +228,7 @@ server {
     listen 127.0.0.1:8088;
     server_name gnucash-invoice-batch-creator.local localhost;
 
-    root /home/alan/public_html/gnucash-invoice-batch-creator/public;
+    root /home/<YOUR USER NAME>/public_html/gnucash-invoice-batch-creator/public;
     index index.php;
 
     client_max_body_size 100M;
@@ -392,18 +392,6 @@ python3 bin/gnc_batch_invoice.py generate --book /path/to/book.gnucash --out /tm
 3. Generate the invoice CSV.
 4. Import it into a test GnuCash file as invoices.
 5. Verify invoice IDs, customers, dates, accounts, posting state, and amounts.
-
-## Git workflow
-
-Initial commit suggestion:
-
-```bash
-git add README.md LICENSE .gitignore .github/FUNDING.yml index.html index.php app bin config/config.example.php config/nginx-local-example.conf public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
-
-git commit -m "v0.1.12 - Preserve group edits and clean runtime status display"
-```
-
-Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.
 
 ## Runtime ownership notes
 
