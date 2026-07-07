@@ -1224,6 +1224,16 @@ function page_reports(): void
     $book = require_book_configured();
     render_header('Batch Customer Reports');
     echo '<p class="muted">Active entity: <strong>' . h($profile['name']) . '</strong>. Active book copy: <code>' . h(basename($book)) . '</code>.</p>';
+    $readyBatch = basename((string)($_GET['batch'] ?? ''));
+    if ($readyBatch !== '' && is_dir(reports_batch_dir($readyBatch, $profile))) {
+        $zipReady = is_file(reports_batch_dir($readyBatch, $profile) . '/customer-reports.zip');
+        echo '<div class="flash ok report-ready"><strong>Report batch ready:</strong> <code>' . h($readyBatch) . '</code>. ';
+        echo '<a class="button secondary inline" href="#report-downloads">Jump to download area</a>';
+        if ($zipReady) {
+            echo ' <a class="button inline" href="?action=download_report_zip&amp;batch=' . h($readyBatch) . '">Download ZIP now</a>';
+        }
+        echo '</div>';
+    }
 
     $settings = profile_report_settings($profile);
     $groups = list_named_json(profile_data_dir('groups'));
@@ -1552,7 +1562,7 @@ function action_clean_reports(): never
 
 function render_recent_report_batches(): void
 {
-    echo '<section class="card"><h2>Recent report batches</h2>';
+    echo '<section class="card" id="report-downloads"><h2>Recent report batches</h2>';
     $base = reports_batch_dir();
     $dirs = glob($base . '/*', GLOB_ONLYDIR) ?: [];
     usort($dirs, fn($a, $b) => (filemtime($b) ?: 0) <=> (filemtime($a) ?: 0));

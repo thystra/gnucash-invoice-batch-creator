@@ -578,6 +578,11 @@ sudo systemctl restart php8.5-fpm
 - `{customer}` can be configured to use Billing Address Name, Company Name, or Customer Number. SQLite GnuCash books are scanned for `customers.id`, `customers.name`, and `customers.addr_name` when available.
 - The Report Appearance form includes a filename preview tester against a selected customer from the active uploaded book.
 
+## v0.1.16 notes
+
+- After customer report generation, the Reports page now shows a **Jump to download area** link near the top of the page when returning from the batch job.
+- The Recent report batches section now has a stable `#report-downloads` anchor, and the post-generation notice also includes a direct ZIP download button when the ZIP exists.
+
 ## v0.1.15 notes
 
 - Patch scripts now explicitly preserve `.git/` and do not use archive-permission sync that can remove repository metadata.
