@@ -834,6 +834,69 @@ def account_full_names(con: sqlite3.Connection) -> dict[str, str]:
     return {guid: full(guid) for guid in rows}
 
 
+
+def payment_counterpart_rows(con: sqlite3.Connection, tx_guid: str, ar_acct: str) -> list[sqlite3.Row]:
+    """Return non-current-account splits for a transaction with account metadata.
+
+    Customer reports should show real payments, not internal A/R lot allocation
+    splits. A real payment has a counterpart in a cash/bank/asset/liability style
+    account. Internal allocations usually have only RECEIVABLE counterpart splits.
+    """
+    cur = con.cursor()
+    if not table_exists(cur, "splits") or not table_exists(cur, "accounts"):
+        return []
+    return list(cur.execute(
+        """
+        SELECT s.guid, s.memo, s.value_num, s.value_denom, s.account_guid,
+               a.name AS account_name, a.account_type
+        FROM splits s
+        LEFT JOIN accounts a ON a.guid = s.account_guid
+        WHERE s.tx_guid = ?
+          AND s.account_guid != ?
+        ORDER BY s.guid
+        """,
+        (tx_guid, ar_acct),
+    ))
+
+
+def is_actual_payment_transaction(con: sqlite3.Connection, tx_guid: str, ar_acct: str) -> bool:
+    payment_types = {"BANK", "CASH", "ASSET", "CREDIT", "LIABILITY"}
+    for row in payment_counterpart_rows(con, tx_guid, ar_acct):
+        amount = dec_from_num_denom(row["value_num"], row["value_denom"])
+        if amount == 0:
+            continue
+        account_type = str(row["account_type"] or "").upper()
+        if account_type in payment_types:
+            return True
+    return False
+
+
+def payment_counterparty_description(con: sqlite3.Connection, tx_guid: str, ar_acct: str, fallback: str, full_names: dict[str, str]) -> str:
+    rows = payment_counterpart_rows(con, tx_guid, ar_acct)
+    payment_types = {"BANK", "CASH", "ASSET", "CREDIT", "LIABILITY"}
+    labels: list[str] = []
+    for row in rows:
+        account_type = str(row["account_type"] or "").upper()
+        if account_type not in payment_types:
+            continue
+        memo = str(row["memo"] or "").strip()
+        if memo and memo not in labels:
+            labels.append(memo)
+    if labels:
+        return "\n".join(labels)
+    if fallback:
+        return fallback
+    account_labels: list[str] = []
+    for row in rows:
+        account_type = str(row["account_type"] or "").upper()
+        if account_type not in payment_types:
+            continue
+        name = full_names.get(str(row["account_guid"] or ""), str(row["account_name"] or "")).strip()
+        if name and name not in account_labels:
+            account_labels.append(name)
+    return "\n".join(account_labels) if account_labels else "Payment"
+
+
 def report_metadata_json(args: argparse.Namespace) -> None:
     path = Path(args.book).expanduser()
     try:
@@ -852,7 +915,7 @@ def report_metadata_json(args: argparse.Namespace) -> None:
         con.close()
 
 
-def load_report_data(con: sqlite3.Connection, customer_ids: list[str], date_from: date, date_to: date, selected_ar: set[str]) -> dict[str, Any]:
+def load_report_data(con: sqlite3.Connection, customer_ids: list[str], date_from: date, date_to: date, selected_ar: set[str], include_internal_offsets: bool = False) -> dict[str, Any]:
     cur = con.cursor()
     needed = ["customers", "invoices", "accounts", "splits", "transactions"]
     missing = [t for t in needed if not table_exists(cur, t)]
@@ -937,6 +1000,12 @@ def load_report_data(con: sqlite3.Connection, customer_ids: list[str], date_from
         add_report_row(by_customer, cust, acct, full_names.get(acct, acct), row_item)
 
     # Payment/credit splits against lots belonging to each customer's posted invoices.
+    # Default behavior intentionally suppresses internal A/R lot allocation/offset rows.
+    # GnuCash often creates balancing splits when credits are applied to invoices; those
+    # are useful for lot accounting but make customer statements noisy. We only show a
+    # non-invoice split as a payment when the same transaction has a non-RECEIVABLE
+    # payment-style counterpart such as Cash, Bank, Asset, Liability, or Credit.
+    payment_buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
     for (customer_id, acct), lots in lots_by_customer_account.items():
         if not lots:
             continue
@@ -954,7 +1023,10 @@ def load_report_data(con: sqlite3.Connection, customer_ids: list[str], date_from
             """,
             params,
         ):
-            if str(row["tx_guid"] or "") in invoice_txns:
+            tx_guid = str(row["tx_guid"] or "")
+            if tx_guid in invoice_txns:
+                continue
+            if not include_internal_offsets and not is_actual_payment_transaction(con, tx_guid, acct):
                 continue
             tx_date_raw = str(row["post_date"] or "")[:10]
             tx_date = parse_iso_date(tx_date_raw)
@@ -964,19 +1036,41 @@ def load_report_data(con: sqlite3.Connection, customer_ids: list[str], date_from
             if amount == 0:
                 continue
             cust = customers_by_id[customer_id]
-            desc = row["description"] or row["memo"] or "Payment"
-            row_item = {
+            key = (customer_id, acct, tx_guid)
+            fallback_desc = str(row["description"] or row["memo"] or "Payment")
+            bucket = payment_buckets.setdefault(key, {
+                "customer": cust,
+                "account": acct,
+                "account_name": full_names.get(acct, acct),
                 "date": tx_date_raw,
                 "due_date": "",
                 "reference": str(row["num"] or ""),
-                "type": "Payment" if amount < 0 else "Adjustment",
-                "description": str(desc),
-                "debit": amount if amount > 0 else Decimal("0"),
-                "credit": -amount if amount < 0 else Decimal("0"),
-                "amount": amount,
-                "sort": (tx_date_raw, 2, str(row["num"] or "")),
-            }
-            add_report_row(by_customer, cust, acct, full_names.get(acct, acct), row_item)
+                "description": payment_counterparty_description(con, tx_guid, acct, fallback_desc, full_names),
+                "amount": Decimal("0"),
+                "sort": (tx_date_raw, 2, str(row["num"] or ""), tx_guid),
+                "internal_offset": not is_actual_payment_transaction(con, tx_guid, acct),
+            })
+            bucket["amount"] += amount
+
+    for bucket in payment_buckets.values():
+        amount = bucket["amount"]
+        if amount == 0:
+            continue
+        row_type = "Payment" if amount < 0 else "Adjustment"
+        if bucket.get("internal_offset"):
+            row_type = "Internal Offset" if amount < 0 else "Internal Adjustment"
+        row_item = {
+            "date": bucket["date"],
+            "due_date": bucket["due_date"],
+            "reference": bucket["reference"],
+            "type": row_type,
+            "description": bucket["description"],
+            "debit": amount if amount > 0 else Decimal("0"),
+            "credit": -amount if amount < 0 else Decimal("0"),
+            "amount": amount,
+            "sort": bucket["sort"],
+        }
+        add_report_row(by_customer, bucket["customer"], bucket["account"], bucket["account_name"], row_item)
 
     return {"customers": list(by_customer.values())}
 
@@ -1232,7 +1326,7 @@ def customer_reports_json(args: argparse.Namespace) -> None:
     except sqlite3.Error as exc:
         raise RuntimeError(f"Customer report generation requires a readable SQLite GnuCash book: {exc}") from exc
     try:
-        data = load_report_data(con, customer_ids, date_from, date_to, selected_ar)
+        data = load_report_data(con, customer_ids, date_from, date_to, selected_ar, bool(payload.get("show_internal_offsets", False)))
     finally:
         con.close()
 

@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const APP_NAME = 'GnuCash Invoice Batch Creator';
-const APP_VERSION = '0.1.16';
+const APP_VERSION = '0.1.17';
 define('BASE_PATH', dirname(__DIR__));
 define('CONFIG_PATH', BASE_PATH . '/config/config.php');
 define('CONFIG_EXAMPLE_PATH', BASE_PATH . '/config/config.example.php');
@@ -556,6 +556,7 @@ function profile_report_settings(?array $profile = null): array
         'footer_text' => '',
         'page_size' => 'Letter',
         'include_zero_balance' => true,
+        'show_internal_offsets' => false,
         'style_reference_file' => '',
         'logo_file' => '',
         'custom_css' => '',

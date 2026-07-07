@@ -578,6 +578,12 @@ sudo systemctl restart php8.5-fpm
 - `{customer}` can be configured to use Billing Address Name, Company Name, or Customer Number. SQLite GnuCash books are scanned for `customers.id`, `customers.name`, and `customers.addr_name` when available.
 - The Report Appearance form includes a filename preview tester against a selected customer from the active uploaded book.
 
+## v0.1.17 notes
+
+- Customer report payment rows now suppress internal GnuCash offset/allocation splits by default. The report generator only shows invoice/credit-note rows and payment rows that have a non-receivable payment counterparty such as Cash, Bank, Asset, Liability, or Credit accounts.
+- Multiple A/R lot splits from the same payment transaction are collapsed into one payment/adjustment line per customer/account/transaction.
+- Report settings include an optional diagnostic checkbox to show internal offset/allocation rows if you need to audit lot-balancing behavior.
+
 ## v0.1.16 notes
 
 - After customer report generation, the Reports page now shows a **Jump to download area** link near the top of the page when returning from the batch job.

@@ -1290,6 +1290,7 @@ function page_reports(): void
     echo '</div></details>';
 
     echo '<label class="check"><input type="checkbox" name="include_zero_balance" value="1" ' . (!empty($settings['include_zero_balance']) ? 'checked' : '') . '> Include zero-balance accounts/customers</label>';
+    echo '<label class="check"><input type="checkbox" name="show_internal_offsets" value="1" ' . (!empty($settings['show_internal_offsets']) ? 'checked' : '') . '> Show internal A/R offset/allocation rows <span class="help-inline">Diagnostic option. Leave unchecked for cleaner GnuCash-like customer statements that show billed items and actual payments only.</span></label>';
     echo '<script>
 (function(){
   const template = document.getElementById("filename_template");
@@ -1390,6 +1391,7 @@ function action_save_report_settings(): never
     $settings['footer_text'] = trim((string)($_POST['footer_text'] ?? ''));
     $settings['page_size'] = in_array(($_POST['page_size'] ?? 'Letter'), ['Letter', 'A4'], true) ? (string)$_POST['page_size'] : 'Letter';
     $settings['include_zero_balance'] = isset($_POST['include_zero_balance']);
+    $settings['show_internal_offsets'] = isset($_POST['show_internal_offsets']);
     $settings['custom_css'] = (string)($_POST['custom_css'] ?? '');
     $source = (string)($_POST['filename_customer_source'] ?? 'billing_name');
     $settings['filename_customer_source'] = in_array($source, ['billing_name', 'company_name', 'customer_number'], true) ? $source : 'billing_name';
@@ -1479,6 +1481,7 @@ function action_generate_reports(): never
         'footer_text' => (string)($settings['footer_text'] ?? ''),
         'page_size' => (string)($settings['page_size'] ?? 'Letter'),
         'include_zero_balance' => isset($_POST['include_zero_balance']),
+        'show_internal_offsets' => !empty($settings['show_internal_offsets']),
         'date_from' => (string)($_POST['date_from'] ?? date('Y-01-01')),
         'date_to' => (string)($_POST['date_to'] ?? date('Y-m-d')),
         'ar_accounts' => $arAccounts,
