@@ -1,3 +1,9 @@
+## v0.1.19 notes
+
+- Customer report PDF pagination now uses Chromium DevTools Protocol footer templates instead of CSS page counters. This fixes the `Page 0 of 0` footer issue seen with Chromium command-line PDF rendering.
+- Customer report HTML no longer injects the CSS `counter(page)` footer. The PDF renderer supplies `Page X of Y` only at PDF render time when page numbers are enabled.
+- The PDF renderer still suppresses Chromium local file-path headers/footers; the generated footer contains only the tool-owned page numbering text.
+
 
 ## v0.1.18 notes
 

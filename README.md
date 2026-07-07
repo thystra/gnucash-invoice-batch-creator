@@ -6,6 +6,8 @@ The initial goal is monthly or recurring invoices/dues: create an entity/profile
 
 Repository: <https://github.com/thystra/gnucash-invoice-batch-creator>
 
+Release notes are maintained in `CHANGELOG.md`.
+
 ## What this tool does
 
 - Stores multiple entities/profiles, such as `ORG A`, `ORG B`, or `ENTITY A LLC`.

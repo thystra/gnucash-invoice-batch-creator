@@ -10,16 +10,25 @@ customer lists, scan selectable customers from the book, and generate GnuCash in
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import gzip
+import hashlib
 import json
 import os
 import re
 import shutil
+import secrets
+import socket
 import sqlite3
 import subprocess
+import struct
+import tempfile
+import time
 import sys
 import zipfile
+import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -751,8 +760,6 @@ td.date, td.ref, td.type { white-space: nowrap; }
 .aging-table { width: auto; margin: .55rem 0 1rem 0; break-inside: avoid; }
 .aging-table th, .aging-table td { min-width: 4.8rem; }
 .footer { margin-top: 1rem; color: #555; font-size: 9pt; }
-.page-number-footer { position: fixed; bottom: -0.28in; left: 0; right: 0; text-align: right; color: #555; font-size: 8pt; }
-.page-number-footer::after { content: "Page " counter(page) " of " counter(pages); }
 @media print { body { padding-bottom: 0.2in; } }
 .page-break { break-after: page; }
 """
@@ -1178,8 +1185,7 @@ def render_customer_html(customer: dict[str, Any], payload: dict[str, Any], styl
             + "</tr></tbody></table></section>"
         )
     footer = f"<div class=\"footer\">{html_escape(payload.get('footer_text',''))}</div>" if payload.get("footer_text") else ""
-    page_footer = '<div class="page-number-footer" aria-hidden="true"></div>' if payload.get("show_page_numbers", True) else ""
-    return "<!doctype html><html><head><meta charset=\"utf-8\"><style>" + css + "</style></head><body>" + header + "\n".join(sections) + footer + page_footer + "</body></html>"
+    return "<!doctype html><html><head><meta charset=\"utf-8\"><style>" + css + "</style></head><body>" + header + "\n".join(sections) + footer + "</body></html>"
 
 
 def extract_style_reference(path: str) -> str:
@@ -1292,8 +1298,242 @@ def resolve_chromium_binary(configured: str = "") -> str:
     )
 
 
-def render_pdf(chromium_bin: str, html_path: Path, pdf_path: Path) -> None:
-    binary = resolve_chromium_binary(chromium_bin)
+
+def _free_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _http_json(url: str, *, method: str = "GET", timeout: float = 1.0) -> Any:
+    req = urllib.request.Request(url, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _wait_for_devtools(port: int, timeout: float = 12.0) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = ""
+    while time.monotonic() < deadline:
+        try:
+            _http_json(f"http://127.0.0.1:{port}/json/version", timeout=0.75)
+            return
+        except Exception as exc:  # pragma: no cover - depends on Chromium startup timing
+            last_error = str(exc)
+            time.sleep(0.15)
+    raise RuntimeError(f"Chromium DevTools endpoint did not become ready: {last_error}")
+
+
+class _WebSocketCDP:
+    """Tiny standard-library WebSocket client for Chromium DevTools JSON-RPC.
+
+    This avoids adding a Python package dependency just to use Chromium's
+    PrintToPDF header/footer templates. Client-to-server frames must be masked;
+    Chromium's server-to-client frames are not masked.
+    """
+
+    def __init__(self, websocket_url: str):
+        parsed = urllib.parse.urlparse(websocket_url)
+        if parsed.scheme not in {"ws", "wss"}:
+            raise RuntimeError(f"Unsupported DevTools websocket URL: {websocket_url}")
+        if parsed.scheme == "wss":
+            raise RuntimeError("wss DevTools endpoints are not supported by the built-in client")
+        self.host = parsed.hostname or "127.0.0.1"
+        self.port = int(parsed.port or 80)
+        self.path = parsed.path or "/"
+        if parsed.query:
+            self.path += "?" + parsed.query
+        self.sock = socket.create_connection((self.host, self.port), timeout=10)
+        self.sock.settimeout(30)
+        self._next_id = 1
+        self._handshake()
+
+    def _handshake(self) -> None:
+        key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
+        request = (
+            f"GET {self.path} HTTP/1.1\r\n"
+            f"Host: {self.host}:{self.port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        self.sock.sendall(request.encode("ascii"))
+        response = b""
+        while b"\r\n\r\n" not in response:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+        if b" 101 " not in response.split(b"\r\n", 1)[0]:
+            raise RuntimeError("Chromium DevTools websocket handshake failed")
+        accept_expected = base64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+        ).decode("ascii")
+        if accept_expected.encode("ascii") not in response:
+            raise RuntimeError("Chromium DevTools websocket handshake returned an unexpected accept key")
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    def _read_exact(self, n: int) -> bytes:
+        chunks: list[bytes] = []
+        remaining = n
+        while remaining > 0:
+            chunk = self.sock.recv(remaining)
+            if not chunk:
+                raise RuntimeError("Chromium DevTools websocket closed unexpectedly")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _recv_frame(self) -> dict[str, Any]:
+        while True:
+            b1, b2 = self._read_exact(2)
+            opcode = b1 & 0x0F
+            length = b2 & 0x7F
+            masked = bool(b2 & 0x80)
+            if length == 126:
+                length = struct.unpack("!H", self._read_exact(2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", self._read_exact(8))[0]
+            mask = self._read_exact(4) if masked else b""
+            payload = self._read_exact(length) if length else b""
+            if masked:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            if opcode == 8:
+                raise RuntimeError("Chromium DevTools websocket closed")
+            if opcode == 9:  # ping; reply with pong
+                self._send_frame(payload, opcode=10)
+                continue
+            if opcode == 10:
+                continue
+            if opcode != 1:
+                continue
+            return json.loads(payload.decode("utf-8"))
+
+    def _send_frame(self, payload: bytes, *, opcode: int = 1) -> None:
+        header = bytearray([0x80 | opcode])
+        length = len(payload)
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < (1 << 16):
+            header.append(0x80 | 126)
+            header.extend(struct.pack("!H", length))
+        else:
+            header.append(0x80 | 127)
+            header.extend(struct.pack("!Q", length))
+        mask = secrets.token_bytes(4)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        self.sock.sendall(bytes(header) + mask + masked)
+
+    def send(self, method: str, params: dict[str, Any] | None = None) -> int:
+        msg_id = self._next_id
+        self._next_id += 1
+        payload = {"id": msg_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        self._send_frame(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        return msg_id
+
+    def wait_response(self, msg_id: int, timeout: float = 30.0) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            msg = self._recv_frame()
+            if msg.get("id") == msg_id:
+                if "error" in msg:
+                    raise RuntimeError("Chromium DevTools error: " + json.dumps(msg["error"]))
+                return msg.get("result", {})
+        raise RuntimeError(f"Timed out waiting for Chromium DevTools response {msg_id}")
+
+    def wait_event(self, method: str, timeout: float = 30.0) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            msg = self._recv_frame()
+            if msg.get("method") == method:
+                return msg.get("params", {})
+        raise RuntimeError(f"Timed out waiting for Chromium DevTools event {method}")
+
+
+def _render_pdf_with_devtools(binary: str, html_path: Path, pdf_path: Path, *, show_page_numbers: bool) -> None:
+    port = _free_tcp_port()
+    html_uri = str(html_path.resolve().as_uri())
+    with tempfile.TemporaryDirectory(prefix="gnc-batch-chromium-") as user_data_dir:
+        cmd = [
+            binary,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            f"--remote-debugging-port={port}",
+            "--remote-debugging-address=127.0.0.1",
+            f"--user-data-dir={user_data_dir}",
+            "about:blank",
+        ]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        ws: _WebSocketCDP | None = None
+        try:
+            try:
+                _wait_for_devtools(port)
+            except Exception:
+                # Some distro Chromium builds do not support --headless=new.
+                proc.terminate()
+                try:
+                    proc.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                cmd[1] = "--headless"
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                _wait_for_devtools(port)
+
+            target = _http_json(f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(html_uri, safe=':/')}", method="PUT", timeout=4)
+            ws_url = target.get("webSocketDebuggerUrl")
+            if not ws_url:
+                raise RuntimeError("Chromium did not return a page DevTools websocket URL")
+            ws = _WebSocketCDP(str(ws_url))
+            ws.wait_response(ws.send("Page.enable"), timeout=10)
+            ws.wait_response(ws.send("Runtime.enable"), timeout=10)
+            # The /json/new URL normally loads the target, but navigate explicitly
+            # to avoid races on slower snap Chromium launches.
+            ws.send("Page.navigate", {"url": html_uri})
+            ws.wait_event("Page.loadEventFired", timeout=30)
+            # Give image assets and fonts a brief chance to settle before printing.
+            time.sleep(0.25)
+            params: dict[str, Any] = {
+                "printBackground": True,
+                "preferCSSPageSize": True,
+                "displayHeaderFooter": bool(show_page_numbers),
+            }
+            if show_page_numbers:
+                params["headerTemplate"] = "<span></span>"
+                params["footerTemplate"] = (
+                    "<div style='font-size:8pt;color:#555;width:100%;"
+                    "padding:0 0.45in;text-align:right;'>"
+                    "Page <span class='pageNumber'></span> of <span class='totalPages'></span>"
+                    "</div>"
+                )
+            result = ws.wait_response(ws.send("Page.printToPDF", params), timeout=45)
+            data = result.get("data")
+            if not data:
+                raise RuntimeError("Chromium returned no PDF data")
+            pdf_path.write_bytes(base64.b64decode(data))
+        finally:
+            if ws is not None:
+                ws.close()
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
+            raise RuntimeError("Chromium DevTools PDF render produced no output")
+
+
+def _render_pdf_with_cli(binary: str, html_path: Path, pdf_path: Path) -> None:
     cmd = [
         binary,
         "--headless=new",
@@ -1312,6 +1552,20 @@ def render_pdf(chromium_bin: str, html_path: Path, pdf_path: Path) -> None:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
     if proc.returncode != 0 or not pdf_path.is_file():
         raise RuntimeError("Chromium PDF render failed using " + binary + ": " + (proc.stderr or proc.stdout or "unknown error"))
+
+
+def render_pdf(chromium_bin: str, html_path: Path, pdf_path: Path, *, show_page_numbers: bool = True) -> None:
+    binary = resolve_chromium_binary(chromium_bin)
+    if show_page_numbers:
+        try:
+            _render_pdf_with_devtools(binary, html_path, pdf_path, show_page_numbers=True)
+            return
+        except Exception as exc:
+            # The CLI fallback still suppresses Chromium's path/date headers, but
+            # cannot render custom Page X of Y footers. Failing hard would block
+            # report generation on systems where remote debugging is unavailable.
+            sys.stderr.write(f"Warning: Chromium DevTools pagination failed; falling back without page numbers: {exc}\n")
+    _render_pdf_with_cli(binary, html_path, pdf_path)
 
 def customer_reports_json(args: argparse.Namespace) -> None:
     payload = json.load(sys.stdin)
@@ -1360,7 +1614,7 @@ def customer_reports_json(args: argparse.Namespace) -> None:
                     total += row.get("amount", Decimal("0"))
             if total == 0:
                 continue
-        render_pdf(str(payload.get("chromium_bin") or ""), html_path, pdf_path)
+        render_pdf(str(payload.get("chromium_bin") or ""), html_path, pdf_path, show_page_numbers=bool(payload.get("show_page_numbers", True)))
         apply_runtime_permissions(pdf_path)
         generated.append({"customer_id": customer["id"], "customer_name": customer["name"], "billing_name": customer.get("billing_name", ""), "html": str(html_path), "pdf": str(pdf_path), "status": "generated"})
 
