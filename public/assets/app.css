@@ -77,3 +77,15 @@ details > summary::marker { color: var(--accent); }
 .status-cell .badge, .badge { white-space: nowrap; }
 .status-cell .help { margin-top: 0.25rem; }
 .filename-preview { border: 1px solid var(--line); border-radius: 8px; padding: 0.55rem; min-height: 2.35rem; background: rgba(127,127,127,.06); overflow-wrap: anywhere; }
+
+.path-wrap {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.card code.path-wrap {
+  line-height: 1.35;
+}
+.foot a { margin: 0 0.15rem; }

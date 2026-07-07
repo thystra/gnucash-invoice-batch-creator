@@ -751,6 +751,9 @@ td.date, td.ref, td.type { white-space: nowrap; }
 .aging-table { width: auto; margin: .55rem 0 1rem 0; break-inside: avoid; }
 .aging-table th, .aging-table td { min-width: 4.8rem; }
 .footer { margin-top: 1rem; color: #555; font-size: 9pt; }
+.page-number-footer { position: fixed; bottom: -0.28in; left: 0; right: 0; text-align: right; color: #555; font-size: 8pt; }
+.page-number-footer::after { content: "Page " counter(page) " of " counter(pages); }
+@media print { body { padding-bottom: 0.2in; } }
 .page-break { break-after: page; }
 """
 
@@ -1175,7 +1178,8 @@ def render_customer_html(customer: dict[str, Any], payload: dict[str, Any], styl
             + "</tr></tbody></table></section>"
         )
     footer = f"<div class=\"footer\">{html_escape(payload.get('footer_text',''))}</div>" if payload.get("footer_text") else ""
-    return "<!doctype html><html><head><meta charset=\"utf-8\"><style>" + css + "</style></head><body>" + header + "\n".join(sections) + footer + "</body></html>"
+    page_footer = '<div class="page-number-footer" aria-hidden="true"></div>' if payload.get("show_page_numbers", True) else ""
+    return "<!doctype html><html><head><meta charset=\"utf-8\"><style>" + css + "</style></head><body>" + header + "\n".join(sections) + footer + page_footer + "</body></html>"
 
 
 def extract_style_reference(path: str) -> str:
@@ -1296,6 +1300,8 @@ def render_pdf(chromium_bin: str, html_path: Path, pdf_path: Path) -> None:
         "--disable-gpu",
         "--no-sandbox",
         "--disable-dev-shm-usage",
+        "--no-pdf-header-footer",
+        "--print-to-pdf-no-header",
         f"--print-to-pdf={pdf_path}",
         str(html_path.resolve().as_uri()),
     ]

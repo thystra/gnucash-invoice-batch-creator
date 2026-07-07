@@ -92,10 +92,11 @@ function page_home(): void
     $book = current_book_path();
     echo '<div class="grid">';
     echo '<section class="card"><h2>Create a batch</h2><p>Select customers directly from the active GnuCash book, choose invoice parameters, and generate a GnuCash invoice import CSV for the active entity.</p><p><a class="button" href="?action=wizard">Open batch wizard</a></p></section>';
-    echo '<section class="card"><h2>Active entity</h2><p><strong>' . h($profile['name'] ?? '(none)') . '</strong></p><p><strong>Book copy:</strong><br>' . h($book ?: '(none selected)') . '</p><p><a class="button secondary" href="?action=config">Manage entities/books</a></p></section>';
+    echo '<section class="card"><h2>Active entity</h2><p><strong>' . h($profile['name'] ?? '(none)') . '</strong></p><p><strong>Book copy:</strong><br><code class="path-wrap">' . h($book ?: '(none selected)') . '</code></p><p><a class="button secondary" href="?action=config">Manage entities/books</a></p></section>';
     echo '<section class="card"><h2>Saved groups</h2><p>Reuse a customer group for monthly dues or repeated billing runs. Groups are stored per entity.</p><p><a class="button secondary" href="?action=groups">Manage groups</a></p></section>';
     echo '<section class="card"><h2>Templates</h2><p>Reuse descriptions, accounts, dates, posting settings, taxes, and price levels. Templates are stored per entity.</p><p><a class="button secondary" href="?action=templates">Manage templates</a></p></section>';
     echo '<section class="card"><h2>Customer reports</h2><p>Generate customer statement PDFs from a revised uploaded GnuCash book, using saved groups and Chromium PDF rendering.</p><p><a class="button secondary" href="?action=reports">Batch reports</a></p></section>';
+    echo '<section class="card"><h2>Support / issues</h2><p>Support continued development, send tips, or report problems back to the GitHub repository.</p><p><a class="button secondary inline" href="https://github.com/thystra/gnucash-invoice-batch-creator" rel="noopener">Project repo</a><a class="button secondary inline" href="https://github.com/thystra/gnucash-invoice-batch-creator/issues" rel="noopener">Report issue</a><a class="button secondary inline" href="https://ko-fi.com/thewolfandtheraven" rel="noopener">Support/tips</a></p></section>';
     echo '<section class="card"><h2>Book scan</h2>';
     if ($book !== '' && is_file($book)) {
         $result = run_python(['scan-book', '--book', $book, '--prefix', (string)app_config('id_prefix', ''), '--padding', (string)app_config('id_padding', 0)]);
@@ -1290,6 +1291,7 @@ function page_reports(): void
     echo '</div></details>';
 
     echo '<label class="check"><input type="checkbox" name="include_zero_balance" value="1" ' . (!empty($settings['include_zero_balance']) ? 'checked' : '') . '> Include zero-balance accounts/customers</label>';
+    echo '<label class="check"><input type="checkbox" name="show_page_numbers" value="1" ' . (!empty($settings['show_page_numbers']) ? 'checked' : '') . '> Add page number footer <span class="help-inline">Uses the tool&#39;s own print footer and Chromium header/footer suppression so the local file path is not printed.</span></label>';
     echo '<label class="check"><input type="checkbox" name="show_internal_offsets" value="1" ' . (!empty($settings['show_internal_offsets']) ? 'checked' : '') . '> Show internal A/R offset/allocation rows <span class="help-inline">Diagnostic option. Leave unchecked for cleaner GnuCash-like customer statements that show billed items and actual payments only.</span></label>';
     echo '<script>
 (function(){
@@ -1391,6 +1393,7 @@ function action_save_report_settings(): never
     $settings['footer_text'] = trim((string)($_POST['footer_text'] ?? ''));
     $settings['page_size'] = in_array(($_POST['page_size'] ?? 'Letter'), ['Letter', 'A4'], true) ? (string)$_POST['page_size'] : 'Letter';
     $settings['include_zero_balance'] = isset($_POST['include_zero_balance']);
+    $settings['show_page_numbers'] = isset($_POST['show_page_numbers']);
     $settings['show_internal_offsets'] = isset($_POST['show_internal_offsets']);
     $settings['custom_css'] = (string)($_POST['custom_css'] ?? '');
     $source = (string)($_POST['filename_customer_source'] ?? 'billing_name');
@@ -1481,6 +1484,7 @@ function action_generate_reports(): never
         'footer_text' => (string)($settings['footer_text'] ?? ''),
         'page_size' => (string)($settings['page_size'] ?? 'Letter'),
         'include_zero_balance' => isset($_POST['include_zero_balance']),
+        'show_page_numbers' => !empty($settings['show_page_numbers']),
         'show_internal_offsets' => !empty($settings['show_internal_offsets']),
         'date_from' => (string)($_POST['date_from'] ?? date('Y-01-01')),
         'date_to' => (string)($_POST['date_to'] ?? date('Y-m-d')),

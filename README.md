@@ -228,7 +228,7 @@ server {
     listen 127.0.0.1:8088;
     server_name gnucash-invoice-batch-creator.local localhost;
 
-    root /home/<YOUR USER NAME>/public_html/gnucash-invoice-batch-creator/public;
+    root /home/alan/public_html/gnucash-invoice-batch-creator/public;
     index index.php;
 
     client_max_body_size 100M;
@@ -393,6 +393,18 @@ python3 bin/gnc_batch_invoice.py generate --book /path/to/book.gnucash --out /tm
 4. Import it into a test GnuCash file as invoices.
 5. Verify invoice IDs, customers, dates, accounts, posting state, and amounts.
 
+## Git workflow
+
+Initial commit suggestion:
+
+```bash
+git add README.md LICENSE .gitignore .github/FUNDING.yml index.html index.php app bin config/config.example.php config/nginx-local-example.conf public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
+
+git commit -m "v0.1.12 - Preserve group edits and clean runtime status display"
+```
+
+Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.
+
 ## Runtime ownership notes
 
 Patch scripts from v0.1.6 onward are designed not to reset existing `var/` and `config/` permissions. They also remind you to run `bin/setup-local-permissions.sh` if runtime checks fail. v0.1.7 also improved Chromium detection for snap-based Ubuntu installs.
@@ -538,6 +550,14 @@ sudo nginx -t
 sudo systemctl reload nginx
 sudo systemctl restart php8.5-fpm
 ```
+
+
+## v0.1.18 notes
+
+- Active book paths on the Home page now wrap inside their card instead of overflowing long profile/book paths.
+- The Home page and footer now include project repository, issue reporting, and support/tips links.
+- Customer report PDF generation now passes Chromium flags to suppress Chromium's built-in PDF headers and footers so local `file://` paths are not printed at the bottom of reports.
+- Report settings include an optional **Add page number footer** control, enabled by default, that adds a tool-owned page-number footer to generated customer report PDFs.
 
 ## v0.1.11 notes
 

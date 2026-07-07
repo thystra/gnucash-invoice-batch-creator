@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const APP_NAME = 'GnuCash Invoice Batch Creator';
-const APP_VERSION = '0.1.17';
+const APP_VERSION = '0.1.18';
 define('BASE_PATH', dirname(__DIR__));
 define('CONFIG_PATH', BASE_PATH . '/config/config.php');
 define('CONFIG_EXAMPLE_PATH', BASE_PATH . '/config/config.example.php');
@@ -557,6 +557,7 @@ function profile_report_settings(?array $profile = null): array
         'page_size' => 'Letter',
         'include_zero_balance' => true,
         'show_internal_offsets' => false,
+        'show_page_numbers' => true,
         'style_reference_file' => '',
         'logo_file' => '',
         'custom_css' => '',
@@ -719,7 +720,11 @@ function render_header(string $title): void
 
 function render_footer(): void
 {
-    echo '</main><footer class="foot">GPL-3.0-or-later. Use on localhost or a trusted internal network only.</footer></body></html>';
+    echo '</main><footer class="foot">GPL-3.0-or-later. Use on localhost or a trusted internal network only. ';
+    echo '<a href="https://github.com/thystra/gnucash-invoice-batch-creator" rel="noopener">Project repo</a> · ';
+    echo '<a href="https://github.com/thystra/gnucash-invoice-batch-creator/issues" rel="noopener">Report an issue</a> · ';
+    echo '<a href="https://ko-fi.com/thewolfandtheraven" rel="noopener">Support/tips</a>';
+    echo '</footer></body></html>';
 }
 
 ensure_runtime_dirs();
