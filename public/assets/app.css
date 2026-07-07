@@ -70,3 +70,8 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 summary { cursor: pointer; padding: 0.35rem 0; }
 summary strong { font-size: 1.05rem; }
 details > summary::marker { color: var(--accent); }
+.runtime-table th:last-child,
+.runtime-table td.status-cell { width: 14rem; min-width: 12rem; }
+.runtime-table code { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+.status-cell .badge, .badge { white-space: nowrap; }
+.status-cell .help { margin-top: 0.25rem; }

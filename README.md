@@ -400,7 +400,7 @@ Initial commit suggestion:
 ```bash
 git add README.md LICENSE .gitignore .github/FUNDING.yml index.html index.php app bin config/config.example.php config/nginx-local-example.conf public data var/.gitkeep var/uploads/.gitkeep var/generated/.gitkeep var/groups/.gitkeep var/templates/.gitkeep var/profiles/.gitkeep
 
-git commit -m "v0.1.11 - Fix root assets and add direct group creation"
+git commit -m "v0.1.12 - Preserve group edits and clean runtime status display"
 ```
 
 Avoid `git add -A` until you have confirmed that no private GnuCash files, SQLite files, uploads, generated CSVs, or profile runtime data are staged.
@@ -556,3 +556,10 @@ sudo systemctl restart php8.5-fpm
 - Root/subdirectory access through `/gnucashtools/invoices/` now loads assets correctly through the root `index.php` shim. Direct `/gnucashtools/invoices/public/index.php` still works, but should not be required for local testing.
 - The Groups page now includes an explicit customer-group creator that scans the active uploaded book and saves selected customers without generating invoice CSVs.
 - Reports now direct clean installs to create a group from the Groups page rather than requiring an invoice batch first.
+
+
+## v0.1.12 notes
+
+- Customer group validation errors now preserve the selected checkboxes, group name, note, sort mode, and inactive-customer filter.
+- Saved customer groups can now be loaded for editing from the Groups page and saved again, including renaming a group.
+- The PHP `open_basedir` runtime check table now uses fixed-width status cells, wrapped path text, and non-wrapping status badges so the badges do not break awkwardly on long basedir values.

@@ -800,17 +800,23 @@ function action_generate(): never
     redirect_to('groups', ['generated' => $filename]);
 }
 
-function render_customer_filter_controls(string $action, string $sortMode, bool $showInactive): void
+function render_customer_filter_controls(string $action, string $sortMode, bool $showInactive, array $extraParams = []): void
 {
-    $inactiveParam = $showInactive ? '&show_inactive=1' : '';
-    echo '<div class="actions">';
-    echo '<a class="button secondary" href="?action=' . h($action) . '&sort=id' . h($inactiveParam) . '">Sort by ID</a>';
-    echo '<a class="button secondary" href="?action=' . h($action) . '&sort=name' . h($inactiveParam) . '">Sort by name</a>';
+    $baseParams = array_merge(['action' => $action], $extraParams);
+    $idParams = array_merge($baseParams, ['sort' => 'id']);
+    $nameParams = array_merge($baseParams, ['sort' => 'name']);
     if ($showInactive) {
-        echo '<a class="button secondary" href="?action=' . h($action) . '&sort=' . h($sortMode) . '">Hide inactive customers</a>';
-    } else {
-        echo '<a class="button secondary" href="?action=' . h($action) . '&sort=' . h($sortMode) . '&show_inactive=1">Show inactive customers</a>';
+        $idParams['show_inactive'] = '1';
+        $nameParams['show_inactive'] = '1';
     }
+    $toggleParams = array_merge($baseParams, ['sort' => $sortMode]);
+    if (!$showInactive) {
+        $toggleParams['show_inactive'] = '1';
+    }
+    echo '<div class="actions">';
+    echo '<a class="button secondary" href="?' . h(http_build_query($idParams)) . '">Sort by ID</a>';
+    echo '<a class="button secondary" href="?' . h(http_build_query($nameParams)) . '">Sort by name</a>';
+    echo '<a class="button secondary" href="?' . h(http_build_query($toggleParams)) . '">' . ($showInactive ? 'Hide inactive customers' : 'Show inactive customers') . '</a>';
     echo '</div>';
 }
 
@@ -838,8 +844,30 @@ function render_customer_group_creator(): void
         return;
     }
 
-    $showInactive = (string)($_GET['show_inactive'] ?? '') === '1';
-    $requestedSort = (string)($_GET['sort'] ?? 'name');
+    $groups = list_named_json(profile_data_dir('groups'));
+    $editSlug = trim((string)($_GET['edit_group'] ?? ''));
+    $editing = null;
+    if ($editSlug !== '') {
+        foreach ($groups as $group) {
+            if (hash_equals((string)$group['slug'], $editSlug)) {
+                $editing = $group;
+                break;
+            }
+        }
+        if ($editing === null) {
+            echo '<div class="flash warn">The requested group was not found for this entity. Creating a new group instead.</div>';
+            $editSlug = '';
+        }
+    }
+
+    $draft = $_SESSION['group_form_draft'] ?? null;
+    if (is_array($draft) && (($draft['profile'] ?? '') !== active_profile_slug())) {
+        $draft = null;
+    }
+    unset($_SESSION['group_form_draft']);
+
+    $showInactive = (string)($_GET['show_inactive'] ?? ($draft['show_inactive'] ?? '')) === '1';
+    $requestedSort = (string)($_GET['sort'] ?? ($draft['sort'] ?? 'name'));
     $sortMode = in_array($requestedSort, ['id', 'name'], true) ? $requestedSort : 'name';
     $bookScan = scan_book_for_wizard($book);
     if (!$bookScan['ok'] || !is_array($bookScan['json'])) {
@@ -848,12 +876,33 @@ function render_customer_group_creator(): void
         return;
     }
 
+    $formName = (string)($draft['group_name'] ?? '');
+    $formNote = (string)($draft['group_note'] ?? '');
+    $selectedIds = [];
+    $hasExplicitSelection = false;
+    if (is_array($draft)) {
+        $selectedIds = is_array($draft['customer_ids'] ?? null) ? array_values(array_map('strval', $draft['customer_ids'])) : [];
+        $hasExplicitSelection = true;
+        $editSlug = (string)($draft['previous_group_slug'] ?? $editSlug);
+    } elseif ($editing !== null) {
+        $formName = (string)($editing['data']['name'] ?? $editing['name'] ?? '');
+        $formNote = (string)($editing['data']['note'] ?? '');
+        $selectedIds = is_array($editing['data']['customer_ids'] ?? null) ? array_values(array_map('strval', $editing['data']['customer_ids'])) : [];
+        $hasExplicitSelection = true;
+    }
+    $selectedLookup = array_fill_keys($selectedIds, true);
+
     $customers = is_array($bookScan['json']['customers'] ?? null) ? $bookScan['json']['customers'] : [];
     $activeCount = (int)($bookScan['json']['active_customer_count'] ?? count(array_filter($customers, 'php_customer_is_active')));
     $inactiveCount = (int)($bookScan['json']['inactive_customer_count'] ?? max(0, count($customers) - $activeCount));
     $visible = sorted_visible_customers($customers, $showInactive, $sortMode);
     echo '<p><span class="badge">Total customers: ' . h(count($customers)) . '</span> <span class="badge">Active: ' . h($activeCount) . '</span> <span class="badge">Inactive: ' . h($inactiveCount) . '</span> <span class="badge">Sort: ' . h($sortMode) . '</span></p>';
-    render_customer_filter_controls('groups', $sortMode, $showInactive);
+    $filterExtra = $editSlug !== '' ? ['edit_group' => $editSlug] : [];
+    render_customer_filter_controls('groups', $sortMode, $showInactive, $filterExtra);
+
+    if ($editing !== null || $editSlug !== '') {
+        echo '<div class="flash ok"><strong>Editing group:</strong> ' . h($formName !== '' ? $formName : $editSlug) . '. Change the name to rename it, then save.</div>';
+    }
 
     if (!$visible) {
         echo '<div class="flash warn">No customers are visible with the current filter.</div>';
@@ -861,21 +910,38 @@ function render_customer_group_creator(): void
         return;
     }
 
+    $visibleIds = array_values(array_filter(array_map(static fn($c) => (string)($c['id'] ?? ''), $visible), static fn($id) => $id !== ''));
+    $hiddenSelectedIds = array_values(array_diff($selectedIds, $visibleIds));
+
     echo '<form method="post" action="?action=save_group">' . csrf_field();
+    echo '<input type="hidden" name="previous_group_slug" value="' . h($editSlug) . '">';
+    echo '<input type="hidden" name="sort_mode" value="' . h($sortMode) . '">';
+    echo '<input type="hidden" name="show_inactive" value="' . ($showInactive ? '1' : '0') . '">';
+    foreach ($hiddenSelectedIds as $hiddenId) {
+        echo '<input type="hidden" name="customer_ids[]" value="' . h($hiddenId) . '">';
+    }
     echo '<div class="grid">';
-    field_text('group_name', 'Group name', '', 'Required. If this name already exists, the group is updated. Example: July 2026 Dues or All Active Youth.');
-    echo '<div><label for="group_note">Group note</label><input type="text" id="group_note" name="group_note" value=""><div class="help">Optional note to remind you why this group was created.</div></div>';
+    field_text('group_name', 'Group name', $formName, 'Required. If this name already exists, the group is updated. Example: July 2026 Dues or All Active Youth.');
+    echo '<div><label for="group_note">Group note</label><input type="text" id="group_note" name="group_note" value="' . h($formNote) . '"><div class="help">Optional note to remind you why this group was created.</div></div>';
     echo '</div>';
+    if ($hiddenSelectedIds) {
+        echo '<p class="help">' . h(count($hiddenSelectedIds)) . ' selected customer(s) are preserved but hidden by the current filter. Choose “Show inactive customers” to review or remove them.</p>';
+    }
     echo '<div class="table-tools"><button class="secondary" type="button" onclick="document.querySelectorAll(\'.group-customer-pick\').forEach(cb => cb.checked = true)">Select all visible</button> <button class="secondary" type="button" onclick="document.querySelectorAll(\'.group-customer-pick\').forEach(cb => cb.checked = false)">Clear visible</button></div>';
     echo '<table class="customer-picker"><tr><th>Select</th><th>ID</th><th>Name</th><th>Status</th></tr>';
     foreach ($visible as $customer) {
+        $id = (string)($customer['id'] ?? '');
         $isActive = php_customer_is_active($customer);
-        $checked = $isActive ? ' checked' : '';
+        $checked = $hasExplicitSelection ? (isset($selectedLookup[$id]) ? ' checked' : '') : ($isActive ? ' checked' : '');
         $rowClass = $isActive ? '' : ' class="inactive-row"';
-        echo '<tr' . $rowClass . '><td><input class="group-customer-pick" type="checkbox" name="customer_ids[]" value="' . h($customer['id'] ?? '') . '"' . $checked . '></td><td><code>' . h($customer['id'] ?? '') . '</code></td><td>' . h($customer['name'] ?? '') . '</td><td>' . ($isActive ? '<span class="badge">active</span>' : '<span class="badge bad">inactive</span>') . '</td></tr>';
+        echo '<tr' . $rowClass . '><td><input class="group-customer-pick" type="checkbox" name="customer_ids[]" value="' . h($id) . '"' . $checked . '></td><td><code>' . h($id) . '</code></td><td>' . h($customer['name'] ?? '') . '</td><td>' . ($isActive ? '<span class="badge">active</span>' : '<span class="badge bad">inactive</span>') . '</td></tr>';
     }
     echo '</table>';
-    echo '<div class="actions"><button type="submit">Save customer group</button></div>';
+    echo '<div class="actions"><button type="submit">Save customer group</button>';
+    if ($editing !== null || $editSlug !== '') {
+        echo '<a class="button secondary" href="?action=groups">Cancel edit</a>';
+    }
+    echo '</div>';
     echo '</form></section>';
 }
 
@@ -907,7 +973,7 @@ function page_groups(): void
         echo '<table><tr><th>Name</th><th>Customers</th><th>Note</th><th>Modified</th><th>Actions</th></tr>';
         foreach ($groups as $group) {
             $note = (string)($group['data']['note'] ?? '');
-            echo '<tr><td>' . h($group['name']) . '</td><td>' . h(count($group['data']['customer_ids'] ?? [])) . '</td><td>' . h($note) . '</td><td>' . h(date('Y-m-d H:i', $group['modified'])) . '</td><td><a href="?action=wizard">Use in wizard</a> | <a href="?action=reports">Use in reports</a> | <a href="?action=delete_group&name=' . h($group['slug']) . '" onclick="return confirm(\'Delete this group?\')">Delete</a></td></tr>';
+            echo '<tr><td>' . h($group['name']) . '</td><td>' . h(count($group['data']['customer_ids'] ?? [])) . '</td><td>' . h($note) . '</td><td>' . h(date('Y-m-d H:i', $group['modified'])) . '</td><td><a href="?action=groups&edit_group=' . h($group['slug']) . '">Edit</a> | <a href="?action=wizard">Use in wizard</a> | <a href="?action=reports">Use in reports</a> | <a href="?action=delete_group&name=' . h($group['slug']) . '" onclick="return confirm(\'Delete this group?\')">Delete</a></td></tr>';
         }
         echo '</table>';
     }
@@ -921,27 +987,65 @@ function action_save_group(): never
     require_profile_configured();
     require_book_configured();
     $name = trim((string)($_POST['group_name'] ?? ''));
-    if ($name === '') {
-        flash('error', 'Enter a customer group name.');
-        redirect_to('groups');
-    }
+    $note = trim((string)($_POST['group_note'] ?? ''));
+    $previousSlug = trim((string)($_POST['previous_group_slug'] ?? ''));
+    $sortMode = in_array(($_POST['sort_mode'] ?? 'name'), ['id', 'name'], true) ? (string)$_POST['sort_mode'] : 'name';
+    $showInactive = (string)($_POST['show_inactive'] ?? '0') === '1';
     $ids = $_POST['customer_ids'] ?? [];
     if (!is_array($ids)) {
         $ids = [];
     }
     $ids = array_values(array_unique(array_filter(array_map(static fn($id) => trim((string)$id), $ids), static fn($id) => $id !== '')));
-    if (!$ids) {
-        flash('error', 'Select at least one customer for the group.');
-        redirect_to('groups');
+
+    $storeDraftAndReturn = function (string $message) use ($name, $note, $previousSlug, $sortMode, $showInactive, $ids): never {
+        $_SESSION['group_form_draft'] = [
+            'profile' => active_profile_slug(),
+            'group_name' => $name,
+            'group_note' => $note,
+            'previous_group_slug' => $previousSlug,
+            'sort' => $sortMode,
+            'show_inactive' => $showInactive ? '1' : '0',
+            'customer_ids' => $ids,
+        ];
+        flash('error', $message);
+        $params = ['sort' => $sortMode];
+        if ($showInactive) {
+            $params['show_inactive'] = '1';
+        }
+        if ($previousSlug !== '') {
+            $params['edit_group'] = $previousSlug;
+        }
+        redirect_to('groups', $params);
+    };
+
+    if ($name === '') {
+        $storeDraftAndReturn('Enter a customer group name. Your customer selections were preserved.');
     }
-    json_write_file(profile_data_dir('groups') . '/' . slugify($name) . '.json', [
+    if (!$ids) {
+        $storeDraftAndReturn('Select at least one customer for the group. Your form values were preserved.');
+    }
+
+    $groupsDir = profile_data_dir('groups');
+    $newSlug = slugify($name);
+    $target = $groupsDir . '/' . $newSlug . '.json';
+    $existing = is_file($target) ? json_read_file($target, []) : [];
+    $previousPath = $previousSlug !== '' ? $groupsDir . '/' . basename($previousSlug) . '.json' : '';
+    if ($existing === [] && $previousPath !== '' && is_file($previousPath)) {
+        $existing = json_read_file($previousPath, []);
+    }
+
+    json_write_file($target, [
         'name' => $name,
-        'created_at' => date(DATE_ATOM),
+        'created_at' => is_array($existing) ? (string)($existing['created_at'] ?? date(DATE_ATOM)) : date(DATE_ATOM),
         'updated_at' => date(DATE_ATOM),
         'profile' => active_profile_slug(),
-        'note' => trim((string)($_POST['group_note'] ?? '')),
+        'note' => $note,
         'customer_ids' => $ids,
     ]);
+    if ($previousPath !== '' && basename($previousSlug) !== $newSlug && is_file($previousPath)) {
+        unlink($previousPath);
+    }
+    unset($_SESSION['group_form_draft']);
     flash('ok', 'Saved customer group "' . $name . '" with ' . count($ids) . ' customers.');
     redirect_to('groups');
 }
@@ -1260,11 +1364,11 @@ function render_runtime_checks_full(): void
     echo '<tr><td>Application directory owner</td><td><code>' . h($identity['app_owner']) . '</code></td><td><code>' . h($identity['app_group']) . '</code></td></tr>';
     echo '</table>';
     $basedir = open_basedir_status();
-    echo '<table><tr><th>PHP open_basedir</th><th>Status</th></tr>';
-    echo '<tr><td><code>' . h($basedir['value'] !== '' ? $basedir['value'] : '(not restricted)') . '</code></td><td>' . (!empty($basedir['base_path_allowed']) ? '<span class="badge">app root allowed</span>' : '<span class="badge bad">app root blocked</span>') . '</td></tr>';
-    echo '<tr><td><code>' . h(BASE_PATH) . '</code></td><td>' . (!empty($basedir['base_path_allowed']) ? 'allowed' : 'blocked') . '</td></tr>';
-    echo '<tr><td><code>' . h(BASE_PATH . '/var') . '</code></td><td>' . (!empty($basedir['var_allowed']) ? 'allowed' : 'blocked') . '</td></tr>';
-    echo '<tr><td><code>/snap/bin</code></td><td>' . (!empty($basedir['snap_bin_allowed']) ? 'allowed or unrestricted' : 'not allowed; Chromium snap detection may fail') . '</td></tr>';
+    echo '<table class="runtime-table"><tr><th>PHP open_basedir</th><th>Status</th></tr>';
+    echo '<tr><td><code>' . h($basedir['value'] !== '' ? $basedir['value'] : '(not restricted)') . '</code></td><td class="status-cell">' . (!empty($basedir['base_path_allowed']) ? '<span class="badge">app root allowed</span>' : '<span class="badge bad">app root blocked</span>') . '</td></tr>';
+    echo '<tr><td><code>' . h(BASE_PATH) . '</code></td><td class="status-cell">' . (!empty($basedir['base_path_allowed']) ? '<span class="badge">allowed</span>' : '<span class="badge bad">blocked</span>') . '</td></tr>';
+    echo '<tr><td><code>' . h(BASE_PATH . '/var') . '</code></td><td class="status-cell">' . (!empty($basedir['var_allowed']) ? '<span class="badge">allowed</span>' : '<span class="badge bad">blocked</span>') . '</td></tr>';
+    echo '<tr><td><code>/snap/bin</code></td><td class="status-cell">' . (!empty($basedir['snap_bin_allowed']) ? '<span class="badge">allowed or unrestricted</span>' : '<span class="badge bad">not allowed</span><div class="help">Chromium snap detection may fail.</div>') . '</td></tr>';
     echo '</table>';
     if (($identity['effective_user'] ?? '') !== ($identity['app_owner'] ?? '')) {
         echo '<div class="flash warn"><strong>Ownership note:</strong> Generated CSV/PDF files are created by the PHP-FPM process user, currently <code>' . h($identity['effective_user']) . '</code>. ACLs can make them writable by your shell user, but they cannot make new files owned by your shell user. For files to be owned by <code>' . h($identity['app_owner']) . '</code>, run this app in a dedicated local PHP-FPM pool as that user.</div>';
