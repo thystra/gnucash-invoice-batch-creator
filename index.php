@@ -12,5 +12,5 @@
 
 declare(strict_types=1);
 
-define('APP_ASSET_BASE', 'public/assets');
+define('APP_ASSET_BASE', 'public');
 require __DIR__ . '/public/index.php';

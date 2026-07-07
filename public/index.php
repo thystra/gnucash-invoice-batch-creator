@@ -27,6 +27,7 @@ try {
         'select_book_customers' => action_select_book_customers(),
         'generate' => action_generate(),
         'groups' => page_groups(),
+        'save_group' => action_save_group(),
         'templates' => page_templates(),
         'reports' => page_reports(),
         'save_report_settings' => action_save_report_settings(),
@@ -799,6 +800,85 @@ function action_generate(): never
     redirect_to('groups', ['generated' => $filename]);
 }
 
+function render_customer_filter_controls(string $action, string $sortMode, bool $showInactive): void
+{
+    $inactiveParam = $showInactive ? '&show_inactive=1' : '';
+    echo '<div class="actions">';
+    echo '<a class="button secondary" href="?action=' . h($action) . '&sort=id' . h($inactiveParam) . '">Sort by ID</a>';
+    echo '<a class="button secondary" href="?action=' . h($action) . '&sort=name' . h($inactiveParam) . '">Sort by name</a>';
+    if ($showInactive) {
+        echo '<a class="button secondary" href="?action=' . h($action) . '&sort=' . h($sortMode) . '">Hide inactive customers</a>';
+    } else {
+        echo '<a class="button secondary" href="?action=' . h($action) . '&sort=' . h($sortMode) . '&show_inactive=1">Show inactive customers</a>';
+    }
+    echo '</div>';
+}
+
+function sorted_visible_customers(array $customers, bool $showInactive, string $sortMode): array
+{
+    $visible = array_values(array_filter($customers, fn($c) => $showInactive || php_customer_is_active($c)));
+    usort($visible, function ($a, $b) use ($sortMode) {
+        if ($sortMode === 'name') {
+            $cmp = strnatcasecmp((string)($a['name'] ?? ''), (string)($b['name'] ?? ''));
+            return $cmp !== 0 ? $cmp : strnatcasecmp((string)($a['id'] ?? ''), (string)($b['id'] ?? ''));
+        }
+        return strnatcasecmp((string)($a['id'] ?? ''), (string)($b['id'] ?? ''));
+    });
+    return $visible;
+}
+
+function render_customer_group_creator(): void
+{
+    $book = current_book_path();
+    echo '<section class="card"><h2>Create or update a customer group</h2>';
+    echo '<p class="help">Create a reusable customer group directly from the active GnuCash book. This does not generate invoices, so it is useful for statement/report batches on a clean install.</p>';
+    if ($book === '' || !is_file($book)) {
+        echo '<div class="flash warn">Upload and select a readable GnuCash book copy before creating groups.</div>';
+        echo '</section>';
+        return;
+    }
+
+    $showInactive = (string)($_GET['show_inactive'] ?? '') === '1';
+    $requestedSort = (string)($_GET['sort'] ?? 'name');
+    $sortMode = in_array($requestedSort, ['id', 'name'], true) ? $requestedSort : 'name';
+    $bookScan = scan_book_for_wizard($book);
+    if (!$bookScan['ok'] || !is_array($bookScan['json'])) {
+        echo '<div class="flash error">Unable to scan customers from the active book.<pre>' . h(($bookScan['stderr'] ?? '') . "\n" . ($bookScan['stdout'] ?? '')) . '</pre></div>';
+        echo '</section>';
+        return;
+    }
+
+    $customers = is_array($bookScan['json']['customers'] ?? null) ? $bookScan['json']['customers'] : [];
+    $activeCount = (int)($bookScan['json']['active_customer_count'] ?? count(array_filter($customers, 'php_customer_is_active')));
+    $inactiveCount = (int)($bookScan['json']['inactive_customer_count'] ?? max(0, count($customers) - $activeCount));
+    $visible = sorted_visible_customers($customers, $showInactive, $sortMode);
+    echo '<p><span class="badge">Total customers: ' . h(count($customers)) . '</span> <span class="badge">Active: ' . h($activeCount) . '</span> <span class="badge">Inactive: ' . h($inactiveCount) . '</span> <span class="badge">Sort: ' . h($sortMode) . '</span></p>';
+    render_customer_filter_controls('groups', $sortMode, $showInactive);
+
+    if (!$visible) {
+        echo '<div class="flash warn">No customers are visible with the current filter.</div>';
+        echo '</section>';
+        return;
+    }
+
+    echo '<form method="post" action="?action=save_group">' . csrf_field();
+    echo '<div class="grid">';
+    field_text('group_name', 'Group name', '', 'Required. If this name already exists, the group is updated. Example: July 2026 Dues or All Active Youth.');
+    echo '<div><label for="group_note">Group note</label><input type="text" id="group_note" name="group_note" value=""><div class="help">Optional note to remind you why this group was created.</div></div>';
+    echo '</div>';
+    echo '<div class="table-tools"><button class="secondary" type="button" onclick="document.querySelectorAll(\'.group-customer-pick\').forEach(cb => cb.checked = true)">Select all visible</button> <button class="secondary" type="button" onclick="document.querySelectorAll(\'.group-customer-pick\').forEach(cb => cb.checked = false)">Clear visible</button></div>';
+    echo '<table class="customer-picker"><tr><th>Select</th><th>ID</th><th>Name</th><th>Status</th></tr>';
+    foreach ($visible as $customer) {
+        $isActive = php_customer_is_active($customer);
+        $checked = $isActive ? ' checked' : '';
+        $rowClass = $isActive ? '' : ' class="inactive-row"';
+        echo '<tr' . $rowClass . '><td><input class="group-customer-pick" type="checkbox" name="customer_ids[]" value="' . h($customer['id'] ?? '') . '"' . $checked . '></td><td><code>' . h($customer['id'] ?? '') . '</code></td><td>' . h($customer['name'] ?? '') . '</td><td>' . ($isActive ? '<span class="badge">active</span>' : '<span class="badge bad">inactive</span>') . '</td></tr>';
+    }
+    echo '</table>';
+    echo '<div class="actions"><button type="submit">Save customer group</button></div>';
+    echo '</form></section>';
+}
+
 function page_groups(): void
 {
     $profile = require_profile_configured();
@@ -816,19 +896,54 @@ function page_groups(): void
         }
         echo '</section>';
     }
+
+    render_customer_group_creator();
+
     echo '<section class="card"><h2>Saved customer groups</h2>';
     $groups = list_named_json(profile_data_dir('groups'));
     if (!$groups) {
-        echo '<p>No saved groups yet for this entity.</p>';
+        echo '<p>No saved groups yet for this entity. Use the creator above to save a group from the active GnuCash book.</p>';
     } else {
-        echo '<table><tr><th>Name</th><th>Customers</th><th>Modified</th><th>Actions</th></tr>';
+        echo '<table><tr><th>Name</th><th>Customers</th><th>Note</th><th>Modified</th><th>Actions</th></tr>';
         foreach ($groups as $group) {
-            echo '<tr><td>' . h($group['name']) . '</td><td>' . h(count($group['data']['customer_ids'] ?? [])) . '</td><td>' . h(date('Y-m-d H:i', $group['modified'])) . '</td><td><a href="?action=wizard">Use</a> | <a href="?action=delete_group&name=' . h($group['slug']) . '" onclick="return confirm(\'Delete this group?\')">Delete</a></td></tr>';
+            $note = (string)($group['data']['note'] ?? '');
+            echo '<tr><td>' . h($group['name']) . '</td><td>' . h(count($group['data']['customer_ids'] ?? [])) . '</td><td>' . h($note) . '</td><td>' . h(date('Y-m-d H:i', $group['modified'])) . '</td><td><a href="?action=wizard">Use in wizard</a> | <a href="?action=reports">Use in reports</a> | <a href="?action=delete_group&name=' . h($group['slug']) . '" onclick="return confirm(\'Delete this group?\')">Delete</a></td></tr>';
         }
         echo '</table>';
     }
     echo '</section>';
     render_footer();
+}
+
+function action_save_group(): never
+{
+    check_csrf();
+    require_profile_configured();
+    require_book_configured();
+    $name = trim((string)($_POST['group_name'] ?? ''));
+    if ($name === '') {
+        flash('error', 'Enter a customer group name.');
+        redirect_to('groups');
+    }
+    $ids = $_POST['customer_ids'] ?? [];
+    if (!is_array($ids)) {
+        $ids = [];
+    }
+    $ids = array_values(array_unique(array_filter(array_map(static fn($id) => trim((string)$id), $ids), static fn($id) => $id !== '')));
+    if (!$ids) {
+        flash('error', 'Select at least one customer for the group.');
+        redirect_to('groups');
+    }
+    json_write_file(profile_data_dir('groups') . '/' . slugify($name) . '.json', [
+        'name' => $name,
+        'created_at' => date(DATE_ATOM),
+        'updated_at' => date(DATE_ATOM),
+        'profile' => active_profile_slug(),
+        'note' => trim((string)($_POST['group_note'] ?? '')),
+        'customer_ids' => $ids,
+    ]);
+    flash('ok', 'Saved customer group "' . $name . '" with ' . count($ids) . ' customers.');
+    redirect_to('groups');
 }
 
 function page_templates(): void
@@ -917,7 +1032,7 @@ function page_reports(): void
 
     echo '<section class="card"><h2>Generate customer report PDFs</h2>';
     if (!$groups) {
-        echo '<div class="flash warn">No saved customer groups exist for this entity yet. Create a group from the Batch Wizard first, then return here.</div>';
+        echo '<div class="flash warn">No saved customer groups exist for this entity yet. Open Groups and create a group from the active GnuCash book, then return here.</div>';
     }
     if (!$metadata['ok'] || !is_array($metadata['json'])) {
         echo '<div class="flash error">Unable to scan report metadata. Report generation currently requires a readable GnuCash SQLite book copy.<pre>' . h(($metadata['stderr'] ?? '') . "\n" . ($metadata['stdout'] ?? '')) . '</pre></div>';
