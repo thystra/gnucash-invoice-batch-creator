@@ -455,6 +455,33 @@ function active_status_label(array $customer): string
     return php_customer_is_active($customer) ? 'active' : 'inactive';
 }
 
+function customer_has_nonzero_balance(array $customer): bool
+{
+    $flag = (string)($customer['nonzero_balance'] ?? '');
+    if ($flag !== '') {
+        return $flag === '1' || strtolower($flag) === 'true';
+    }
+    $balance = trim((string)($customer['balance'] ?? ''));
+    if ($balance === '') {
+        return false;
+    }
+    return abs((float)str_replace([',', '$'], '', $balance)) > 0.000001;
+}
+
+function customer_balance_display(array $customer): string
+{
+    if (!array_key_exists('balance', $customer)) {
+        return '';
+    }
+    $raw = trim((string)$customer['balance']);
+    if ($raw === '') {
+        return '';
+    }
+    $amount = (float)str_replace([',', '$'], '', $raw);
+    $formatted = '$' . number_format(abs($amount), 2);
+    return $amount < 0 ? '-' . $formatted : $formatted;
+}
+
 function scan_book_for_wizard(string $book): array
 {
     return run_python(['scan-book', '--book', $book, '--prefix', (string)app_config('id_prefix', ''), '--padding', (string)app_config('id_padding', 0)]);
@@ -563,6 +590,8 @@ function page_wizard(): void
         $customers = is_array($bookScan['json']['customers'] ?? null) ? $bookScan['json']['customers'] : [];
         $activeCount = (int)($bookScan['json']['active_customer_count'] ?? count(array_filter($customers, 'php_customer_is_active')));
         $inactiveCount = (int)($bookScan['json']['inactive_customer_count'] ?? max(0, count($customers) - $activeCount));
+        $balanceScanOk = (bool)($bookScan['json']['customer_balance_scan_ok'] ?? false);
+        $nonzeroBalanceCount = $balanceScanOk ? (int)($bookScan['json']['nonzero_balance_customer_count'] ?? 0) : null;
         $visible = array_values(array_filter($customers, fn($c) => $showInactive || php_customer_is_active($c)));
         usort($visible, function ($a, $b) use ($sortMode) {
             if ($sortMode === 'name') {
@@ -571,7 +600,13 @@ function page_wizard(): void
             }
             return strnatcasecmp((string)($a['id'] ?? ''), (string)($b['id'] ?? ''));
         });
-        echo '<p><span class="badge">Total customers: ' . h(count($customers)) . '</span> <span class="badge">Active: ' . h($activeCount) . '</span> <span class="badge">Inactive: ' . h($inactiveCount) . '</span> <span class="badge">Next invoice: ' . h($bookScan['json']['next_invoice_id'] ?? '') . '</span> <span class="badge">Sort: ' . h($sortMode) . '</span></p>';
+        echo '<p><span class="badge">Total customers: ' . h(count($customers)) . '</span> <span class="badge">Active: ' . h($activeCount) . '</span> <span class="badge">Inactive: ' . h($inactiveCount) . '</span> ';
+        if ($balanceScanOk) {
+            echo '<span class="badge">Non-zero balance: ' . h((string)$nonzeroBalanceCount) . '</span> ';
+        } else {
+            echo '<span class="badge bad">Balance scan unavailable</span> ';
+        }
+        echo '<span class="badge">Next invoice: ' . h($bookScan['json']['next_invoice_id'] ?? '') . '</span> <span class="badge">Sort: ' . h($sortMode) . '</span></p>';
         $inactiveParam = $showInactive ? '&show_inactive=1' : '';
         echo '<div class="actions">';
         echo '<a class="button secondary" href="?action=wizard&sort=id' . h($inactiveParam) . '">Sort by ID</a>';
@@ -587,13 +622,25 @@ function page_wizard(): void
             echo '<div class="flash warn">No customers are visible with the current filter.</div>';
         } else {
             echo '<form method="post" action="?action=select_book_customers">' . csrf_field();
-            echo '<div class="table-tools"><button class="secondary" type="button" onclick="document.querySelectorAll(\'.customer-pick\').forEach(cb => cb.checked = true)">Select all visible</button> <button class="secondary" type="button" onclick="document.querySelectorAll(\'.customer-pick\').forEach(cb => cb.checked = false)">Clear visible</button></div>';
-            echo '<table class="customer-picker"><tr><th>Select</th><th>ID</th><th>Name</th><th>Status</th></tr>';
+            echo '<div class="table-tools"><button class="secondary" type="button" onclick="document.querySelectorAll(\'.customer-pick\').forEach(cb => cb.checked = true)">Select all visible</button> ';
+            if ($balanceScanOk) {
+                echo '<button class="secondary" type="button" onclick="document.querySelectorAll(\'.customer-pick\').forEach(cb => cb.checked = cb.dataset.nonzero === \'1\')">Select non-zero visible</button> ';
+            }
+            echo '<button class="secondary" type="button" onclick="document.querySelectorAll(\'.customer-pick\').forEach(cb => cb.checked = false)">Clear visible</button></div>';
+            if ($balanceScanOk) {
+                echo '<p class="help">The non-zero shortcut uses the uploaded SQLite book&rsquo;s current A/R balances. Inactive customers are only included when they are visible.</p>';
+            } else {
+                echo '<p class="help">Balance-based selection requires a SQLite GnuCash book with transaction tables. Customer selection still works normally.</p>';
+            }
+            echo '<table class="customer-picker"><tr><th>Select</th><th>ID</th><th>Name</th><th>Status</th><th>Balance</th></tr>';
             foreach ($visible as $customer) {
                 $isActive = php_customer_is_active($customer);
                 $checked = $isActive ? ' checked' : '';
                 $rowClass = $isActive ? '' : ' class="inactive-row"';
-                echo '<tr' . $rowClass . '><td><input class="customer-pick" type="checkbox" name="customer_ids[]" value="' . h($customer['id'] ?? '') . '"' . $checked . '></td><td><code>' . h($customer['id'] ?? '') . '</code></td><td>' . h($customer['name'] ?? '') . '</td><td>' . ($isActive ? '<span class="badge">active</span>' : '<span class="badge bad">inactive</span>') . '</td></tr>';
+                $nonzero = customer_has_nonzero_balance($customer) ? '1' : '0';
+                $balanceDisplay = customer_balance_display($customer);
+                $balanceClass = $nonzero === '1' ? 'balance-cell nonzero' : 'balance-cell';
+                echo '<tr' . $rowClass . '><td><input class="customer-pick" type="checkbox" name="customer_ids[]" value="' . h($customer['id'] ?? '') . '" data-nonzero="' . h($nonzero) . '"' . $checked . '></td><td><code>' . h($customer['id'] ?? '') . '</code></td><td>' . h($customer['name'] ?? '') . '</td><td>' . ($isActive ? '<span class="badge">active</span>' : '<span class="badge bad">inactive</span>') . '</td><td class="' . h($balanceClass) . '">' . h($balanceDisplay) . '</td></tr>';
             }
             echo '</table>';
             echo '<div class="actions"><button type="submit">Continue with selected customers</button></div></form>';
@@ -931,8 +978,16 @@ function render_customer_group_creator(): void
     $customers = is_array($bookScan['json']['customers'] ?? null) ? $bookScan['json']['customers'] : [];
     $activeCount = (int)($bookScan['json']['active_customer_count'] ?? count(array_filter($customers, 'php_customer_is_active')));
     $inactiveCount = (int)($bookScan['json']['inactive_customer_count'] ?? max(0, count($customers) - $activeCount));
+    $balanceScanOk = (bool)($bookScan['json']['customer_balance_scan_ok'] ?? false);
+    $nonzeroBalanceCount = $balanceScanOk ? (int)($bookScan['json']['nonzero_balance_customer_count'] ?? 0) : null;
     $visible = sorted_visible_customers($customers, $showInactive, $sortMode);
-    echo '<p><span class="badge">Total customers: ' . h(count($customers)) . '</span> <span class="badge">Active: ' . h($activeCount) . '</span> <span class="badge">Inactive: ' . h($inactiveCount) . '</span> <span class="badge">Sort: ' . h($sortMode) . '</span></p>';
+    echo '<p><span class="badge">Total customers: ' . h(count($customers)) . '</span> <span class="badge">Active: ' . h($activeCount) . '</span> <span class="badge">Inactive: ' . h($inactiveCount) . '</span> ';
+    if ($balanceScanOk) {
+        echo '<span class="badge">Non-zero balance: ' . h((string)$nonzeroBalanceCount) . '</span> ';
+    } else {
+        echo '<span class="badge bad">Balance scan unavailable</span> ';
+    }
+    echo '<span class="badge">Sort: ' . h($sortMode) . '</span></p>';
     $filterExtra = $editSlug !== '' ? ['edit_group' => $editSlug] : [];
     render_customer_filter_controls('groups', $sortMode, $showInactive, $filterExtra);
 
@@ -963,14 +1018,26 @@ function render_customer_group_creator(): void
     if ($hiddenSelectedIds) {
         echo '<p class="help">' . h(count($hiddenSelectedIds)) . ' selected customer(s) are preserved but hidden by the current filter. Choose “Show inactive customers” to review or remove them.</p>';
     }
-    echo '<div class="table-tools"><button class="secondary" type="button" onclick="document.querySelectorAll(\'.group-customer-pick\').forEach(cb => cb.checked = true)">Select all visible</button> <button class="secondary" type="button" onclick="document.querySelectorAll(\'.group-customer-pick\').forEach(cb => cb.checked = false)">Clear visible</button></div>';
-    echo '<table class="customer-picker"><tr><th>Select</th><th>ID</th><th>Name</th><th>Status</th></tr>';
+    echo '<div class="table-tools"><button class="secondary" type="button" onclick="document.querySelectorAll(\'.group-customer-pick\').forEach(cb => cb.checked = true)">Select all visible</button> ';
+    if ($balanceScanOk) {
+        echo '<button class="secondary" type="button" onclick="document.querySelectorAll(\'.group-customer-pick\').forEach(cb => cb.checked = cb.dataset.nonzero === \'1\')">Select non-zero visible</button> ';
+    }
+    echo '<button class="secondary" type="button" onclick="document.querySelectorAll(\'.group-customer-pick\').forEach(cb => cb.checked = false)">Clear visible</button></div>';
+    if ($balanceScanOk) {
+        echo '<p class="help">Use Select non-zero visible to create a statement/report group for customers with current A/R balances. Show inactive customers first if you want inactive non-zero customers included.</p>';
+    } else {
+        echo '<p class="help">Balance-based selection requires a SQLite GnuCash book with transaction tables. Group creation still works normally.</p>';
+    }
+            echo '<table class="customer-picker"><tr><th>Select</th><th>ID</th><th>Name</th><th>Status</th><th>Balance</th></tr>';
     foreach ($visible as $customer) {
         $id = (string)($customer['id'] ?? '');
         $isActive = php_customer_is_active($customer);
         $checked = $hasExplicitSelection ? (isset($selectedLookup[$id]) ? ' checked' : '') : ($isActive ? ' checked' : '');
         $rowClass = $isActive ? '' : ' class="inactive-row"';
-        echo '<tr' . $rowClass . '><td><input class="group-customer-pick" type="checkbox" name="customer_ids[]" value="' . h($id) . '"' . $checked . '></td><td><code>' . h($id) . '</code></td><td>' . h($customer['name'] ?? '') . '</td><td>' . ($isActive ? '<span class="badge">active</span>' : '<span class="badge bad">inactive</span>') . '</td></tr>';
+        $nonzero = customer_has_nonzero_balance($customer) ? '1' : '0';
+        $balanceDisplay = customer_balance_display($customer);
+        $balanceClass = $nonzero === '1' ? 'balance-cell nonzero' : 'balance-cell';
+        echo '<tr' . $rowClass . '><td><input class="group-customer-pick" type="checkbox" name="customer_ids[]" value="' . h($id) . '" data-nonzero="' . h($nonzero) . '"' . $checked . '></td><td><code>' . h($id) . '</code></td><td>' . h($customer['name'] ?? '') . '</td><td>' . ($isActive ? '<span class="badge">active</span>' : '<span class="badge bad">inactive</span>') . '</td><td class="' . h($balanceClass) . '">' . h($balanceDisplay) . '</td></tr>';
     }
     echo '</table>';
     echo '<div class="actions"><button type="submit">Save customer group</button>';

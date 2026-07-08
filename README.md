@@ -18,6 +18,7 @@ Release notes are maintained in `CHANGELOG.md`.
 - Filters inactive customers by default, based on `customers.active` where `1` is active and `0` is inactive.
 - Provides a Show inactive customers option for unusual or historical billing batches.
 - Allows customer selection to be sorted by customer ID or by name.
+- Provides a balance-aware **Select non-zero visible** shortcut in the Batch Wizard and Groups page when the uploaded book is SQLite and transaction-level A/R balances can be scanned.
 - Scans the uploaded book for valid income and Accounts Receivable accounts, then uses those scanned accounts in account selection fields.
 - Still supports optional CSV, text, or XLSX customer-ID uploads as a fallback for external rosters.
 - Matches selected or uploaded IDs against GnuCash customers.
@@ -293,11 +294,12 @@ The primary workflow is now fully GUI-driven:
 1. Upload or select an active GnuCash book copy for the current entity/profile.
 2. Open **Batch Wizard**.
 3. Review the customer list scanned from the book. Active customers are checked by default. Sort by ID or by name as needed.
-4. Use **Show inactive customers** only when you deliberately need to include inactive customers. Inactive customers are visible but unchecked by default.
-5. Continue with the selected customers. Once a selection exists, the large customer list collapses so the invoice fields are easier to reach.
-6. Enter the shared invoice values, such as description, dates, scanned income account, scanned A/R account, price, posting option, and tax settings.
-7. Optionally save the selected customers as a reusable group and save the invoice values as a reusable template.
-8. Generate and download the GnuCash invoice CSV.
+4. Use **Select non-zero visible** when you want to bill or review only customers whose current A/R balance is not zero. This shortcut is available when the uploaded book is SQLite and transaction-level balances can be scanned.
+5. Use **Show inactive customers** only when you deliberately need to include inactive customers. Inactive customers are visible but unchecked by default.
+6. Continue with the selected customers. Once a selection exists, the large customer list collapses so the invoice fields are easier to reach.
+7. Enter the shared invoice values, such as description, dates, scanned income account, scanned A/R account, price, posting option, and tax settings.
+8. Optionally save the selected customers as a reusable group and save the invoice values as a reusable template.
+9. Generate and download the GnuCash invoice CSV.
 
 The old customer-ID upload workflow remains under **Saved groups and alternate input** for external rosters, but it is no longer required for normal use.
 

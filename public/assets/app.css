@@ -89,3 +89,5 @@ details > summary::marker { color: var(--accent); }
   line-height: 1.35;
 }
 .foot a { margin: 0 0.15rem; }
+.balance-cell { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.balance-cell.nonzero { font-weight: 700; color: var(--danger); }

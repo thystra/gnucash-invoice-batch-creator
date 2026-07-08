@@ -388,11 +388,60 @@ def customers_to_json(customers: list[Customer]) -> list[dict[str, Any]]:
     ]
 
 
+def customer_balances_for_scan(book_path: str | Path, customers: list[Customer]) -> tuple[bool, dict[str, dict[str, str]]]:
+    """Return ending customer balances from a SQLite book, keyed by customer ID.
+
+    This is used by the web UI's "select non-zero balance" shortcut. It reuses
+    the customer report data loader so the shortcut follows the same A/R logic
+    used for batch statements. XML books can still be scanned for customers, but
+    transaction-level balances currently require SQLite.
+    """
+    if not customers:
+        return True, {}
+    path = Path(book_path).expanduser()
+    try:
+        con = sqlite_connect_ro(path)
+    except Exception:
+        return False, {}
+    try:
+        customer_ids = [c.id for c in customers]
+        data = load_report_data(con, customer_ids, date(1900, 1, 1), date(9999, 12, 31), set(), False)
+    except Exception:
+        return False, {}
+    finally:
+        con.close()
+
+    balances: dict[str, dict[str, str]] = {}
+    for customer in data.get("customers", []):
+        total = Decimal("0")
+        for account in customer.get("accounts", {}).values():
+            for row in account.get("rows", []):
+                total += row.get("amount", Decimal("0"))
+        balances[str(customer.get("id") or "")] = {
+            "balance": f"{total:.2f}",
+            "nonzero_balance": "1" if total != 0 else "0",
+        }
+    # Customers without rows have a zero balance. Include them explicitly so the
+    # UI knows balance scanning succeeded, even when no transactions exist.
+    for customer in customers:
+        balances.setdefault(customer.id, {"balance": "0.00", "nonzero_balance": "0"})
+    return True, balances
+
+
 def scan_book_json(args: argparse.Namespace) -> None:
     customers, invoice_ids = scan_book(args.book)
     accounts = scan_accounts(args.book)
     active_count = sum(1 for c in customers if customer_is_active(c.active))
     inactive_count = len(customers) - active_count
+    customer_json = customers_to_json(customers)
+    balance_scan_ok, balances = customer_balances_for_scan(args.book, customers)
+    nonzero_count = 0
+    for item in customer_json:
+        balance = balances.get(str(item.get("id") or ""))
+        if balance is not None:
+            item.update(balance)
+            if balance.get("nonzero_balance") == "1":
+                nonzero_count += 1
     print_json(
         {
             "ok": True,
@@ -400,9 +449,11 @@ def scan_book_json(args: argparse.Namespace) -> None:
             "customer_count": len(customers),
             "active_customer_count": active_count,
             "inactive_customer_count": inactive_count,
+            "customer_balance_scan_ok": balance_scan_ok,
+            "nonzero_balance_customer_count": nonzero_count if balance_scan_ok else None,
             "invoice_count": len(invoice_ids),
             "next_invoice_id": suggest_next_invoice_id(invoice_ids, args.prefix or "", int(args.padding or 0)),
-            "customers": customers_to_json(customers),
+            "customers": customer_json,
             "account_count": len(accounts),
             "accounts": accounts,
             "income_accounts": [a for a in accounts if is_income_account(a)],

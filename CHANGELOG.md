@@ -1,3 +1,10 @@
+## v0.1.20 notes
+
+- The Batch Wizard customer picker now includes a **Select non-zero visible** button when the active uploaded book is a SQLite GnuCash book with transaction tables.
+- Customer rows now show scanned A/R balance values in the Batch Wizard customer picker.
+- The Groups page also includes the same balance-aware selection shortcut, so users can create statement/report groups for customers with non-zero balances without generating invoices first.
+- Balance scanning reuses the customer-report A/R logic and falls back gracefully when transaction-level balance data is unavailable, such as XML-only book scans.
+
 ## v0.1.19 notes
 
 - Customer report PDF pagination now uses Chromium DevTools Protocol footer templates instead of CSS page counters. This fixes the `Page 0 of 0` footer issue seen with Chromium command-line PDF rendering.
