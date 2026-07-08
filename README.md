@@ -466,7 +466,7 @@ sudo systemctl reload nginx
 For a quick manual repair, edit `/etc/php/8.5/fpm/pool.d/gnucash-invoice-batch-creator.conf` and make the first path in `open_basedir` match the actual clone path or its trusted parent directory:
 
 ```ini
-php_admin_value[open_basedir] = /home/$USER/public_html/invoices:/tmp:/usr/bin:/bin:/snap/bin:/var/lib/snapd/snap/bin:/run/php
+php_admin_value[open_basedir] = /home/YOUR_USER_NAME/public_html/invoices:/tmp:/usr/bin:/bin:/snap/bin:/var/lib/snapd/snap/bin:/run/php
 ```
 
 Then restart PHP-FPM and reload nginx:
