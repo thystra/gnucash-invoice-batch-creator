@@ -423,7 +423,7 @@ python3 bin/gnc_batch_invoice.py generate --book /path/to/book.gnucash --out /tm
 
 Patch scripts from v0.1.6 onward are designed not to reset existing `var/` and `config/` permissions. They also remind you to run `bin/setup-local-permissions.sh` if runtime checks fail. v0.1.7 also improved Chromium detection for snap-based Ubuntu installs.
 
-A web application cannot create files as `$USER` while PHP-FPM is running as `www-data`. To make generated CSV files owned by `alan`, the PHP-FPM worker for this app must run as `alan`. Use `bin/install-local-fpm-pool.sh` for that local/trusted deployment model.
+A web application cannot create files as `$USER` while PHP-FPM is running as `www-data`. To make generated CSV files owned by `$USER`, the PHP-FPM worker for this app must run as `$SUER`. Use `bin/install-local-fpm-pool.sh` for that local/trusted deployment model.
 
 
 
@@ -433,23 +433,23 @@ A web application cannot create files as `$USER` while PHP-FPM is running as `ww
 If nginx shows **No input file specified** and the error log contains a message like:
 
 ```text
-open_basedir restriction in effect. File(/home/alan/public_html/invoices/index.php) is not within the allowed path(s): (/home/alan/public_html/gnucash-invoice-batch-creator:/tmp:/usr/bin:/run/php)
+open_basedir restriction in effect. File(/home/$USER/public_html/invoices/index.php) is not within the allowed path(s): (/home/$USER/public_html/gnucash-invoice-batch-creator:/tmp:/usr/bin:/run/php)
 ```
 
 then the PHP-FPM pool is still restricted to the old clone path. Regenerate the local pool from inside the new clone, explicitly passing the current directory:
 
 ```bash
-cd /home/alan/public_html/invoices
-sudo bash bin/install-local-fpm-pool.sh alan publicweb 8.5 "$(pwd)"
+cd /home/$USER/public_html/invoices
+sudo bash bin/install-local-fpm-pool.sh $USER publicweb 8.5 "$(pwd)"
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-For local/trusted development where multiple tools live under `public_html`, you can instead broaden the pool to `/home/alan/public_html`:
+For local/trusted development where multiple tools live under `public_html`, you can instead broaden the pool to `/home/$USER/public_html`:
 
 ```bash
-cd /home/alan/public_html/invoices
-sudo bash bin/install-local-fpm-pool.sh alan publicweb 8.5 "$(pwd)" public_html
+cd /home/$USER/public_html/invoices
+sudo bash bin/install-local-fpm-pool.sh $USER publicweb 8.5 "$(pwd)" public_html
 sudo nginx -t
 sudo systemctl reload nginx
 ```
@@ -457,8 +457,8 @@ sudo systemctl reload nginx
 For the recommended shared GnuCash tools layout, use:
 
 ```bash
-cd /home/alan/public_html/gnucashtools/invoices
-sudo bash bin/install-gnucash-tools-fpm-pool.sh alan publicweb 8.5 /home/alan/public_html/gnucashtools
+cd /home/$USER/public_html/gnucashtools/invoices
+sudo bash bin/install-gnucash-tools-fpm-pool.sh $USER publicweb 8.5 /home/$USER/public_html/gnucashtools
 sudo nginx -t
 sudo systemctl reload nginx
 ```
@@ -466,7 +466,7 @@ sudo systemctl reload nginx
 For a quick manual repair, edit `/etc/php/8.5/fpm/pool.d/gnucash-invoice-batch-creator.conf` and make the first path in `open_basedir` match the actual clone path or its trusted parent directory:
 
 ```ini
-php_admin_value[open_basedir] = /home/alan/public_html/invoices:/tmp:/usr/bin:/bin:/snap/bin:/var/lib/snapd/snap/bin:/run/php
+php_admin_value[open_basedir] = /home/$USER/public_html/invoices:/tmp:/usr/bin:/bin:/snap/bin:/var/lib/snapd/snap/bin:/run/php
 ```
 
 Then restart PHP-FPM and reload nginx:
@@ -534,20 +534,20 @@ php -l index.php
 php -l public/index.php
 ```
 
-If PHP syntax checks pass but the browser still reports **No input file specified**, update nginx so `SCRIPT_FILENAME` points at the real path. See `config/nginx-local-example.conf`. For a clone at `/home/alan/public_html/invoices`, the important part is:
+If PHP syntax checks pass but the browser still reports **No input file specified**, update nginx so `SCRIPT_FILENAME` points at the real path. See `config/nginx-local-example.conf`. For a clone at `/home/$USER/public_html/invoices`, the important part is:
 
 ```nginx
 location /invoices/ {
-    alias /home/alan/public_html/invoices/;
+    alias /home/$USER/public_html/invoices/;
     index index.php;
     try_files $uri $uri/ /invoices/index.php?$query_string;
 }
 
 location ~ ^/invoices/(.+\.php)$ {
-    alias /home/alan/public_html/invoices/$1;
+    alias /home/$USER/public_html/invoices/$1;
     include fastcgi_params;
-    fastcgi_param SCRIPT_FILENAME /home/alan/public_html/invoices/$1;
-    fastcgi_param DOCUMENT_ROOT /home/alan/public_html/invoices;
+    fastcgi_param SCRIPT_FILENAME /home/$USER/public_html/invoices/$1;
+    fastcgi_param DOCUMENT_ROOT /home/$USER/public_html/invoices;
     fastcgi_pass unix:/run/php/gnucash-invoice-batch-creator.sock;
 }
 
