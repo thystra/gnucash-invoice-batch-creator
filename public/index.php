@@ -1694,8 +1694,20 @@ function page_invoice_exports(): void
     $dateFrom = (string)($_GET['date_from'] ?? date('Y-01-01'));
     $dateTo = (string)($_GET['date_to'] ?? date('Y-m-d'));
     $groupSlug = basename((string)($_GET['group'] ?? ''));
-    $showPreview = isset($_GET['show_invoices']) || isset($_GET['date_from']) || isset($_GET['date_to']) || $groupSlug !== '';
+    $customerId = trim((string)($_GET['customer_id'] ?? ''));
+    $showPreview = isset($_GET['show_invoices']) || isset($_GET['date_from']) || isset($_GET['date_to']) || $groupSlug !== '' || $customerId !== '';
     $filenameTemplate = (string)($_GET['filename_template'] ?? '{customer} - {invoice_id} - invoice');
+
+    $scan = scan_book_for_wizard($book);
+    $availableCustomers = [];
+    if ($scan['ok'] && is_array($scan['json'])) {
+        $availableCustomers = is_array($scan['json']['customers'] ?? null) ? $scan['json']['customers'] : [];
+        usort($availableCustomers, static function ($a, $b): int {
+            $aLabel = (string)($a['name'] ?? $a['billing_name'] ?? $a['id'] ?? '');
+            $bLabel = (string)($b['name'] ?? $b['billing_name'] ?? $b['id'] ?? '');
+            return strnatcasecmp($aLabel, $bLabel);
+        });
+    }
 
     echo '<section class="card"><h2>Find invoices</h2>';
     echo '<p class="help">Select invoices from the active uploaded GnuCash book, then export each invoice as its own PDF file. Use a date range, a saved customer group, or both. Invoice generation currently requires a SQLite GnuCash book copy.</p>';
@@ -1711,6 +1723,29 @@ function page_invoice_exports(): void
         echo '<option value="' . h((string)$group['slug']) . '"' . $selected . '>' . h((string)$group['name']) . '</option>';
     }
     echo '</select><div class="help">Optional. Restrict invoice selection to a saved group.</div></div>';
+    echo '<div><label for="customer_id">Single customer filter</label><select id="customer_id" name="customer_id"><option value="">All customers with invoices in range</option>';
+    foreach ($availableCustomers as $customer) {
+        $id = (string)($customer['id'] ?? '');
+        if ($id === '') {
+            continue;
+        }
+        $name = trim((string)($customer['name'] ?? ''));
+        $billingName = trim((string)($customer['billing_name'] ?? ''));
+        $labelParts = [$id];
+        if ($name !== '' && $name !== $id) {
+            $labelParts[] = $name;
+        }
+        if ($billingName !== '' && $billingName !== $name && $billingName !== $id) {
+            $labelParts[] = $billingName;
+        }
+        $label = implode(' — ', $labelParts);
+        if (empty($customer['active_bool'])) {
+            $label .= ' (inactive)';
+        }
+        $selected = $customerId === $id ? ' selected' : '';
+        echo '<option value="' . h($id) . '"' . $selected . '>' . h($label) . '</option>';
+    }
+    echo '</select><div class="help">Optional. Choose one customer from the active uploaded book. If both a saved group and a single customer are selected, both filters are applied.</div></div>';
     field_text('filename_template', 'PDF filename template', $filenameTemplate, 'Variables: {customer}, {customer_id}, {customer_number}, {company_name}, {billing_name}, {invoice_id}, {invoice_date}, {date}, {date_from}, {date_to}, {text}.');
     echo '</div>';
     echo '<div class="actions"><button type="submit">Show available invoices</button></div></form></section>';
@@ -1721,6 +1756,13 @@ function page_invoice_exports(): void
             $group = json_read_file(profile_data_dir('groups') . '/' . $groupSlug . '.json', []);
             if (is_array($group)) {
                 $customerIds = array_values(array_map('strval', $group['customer_ids'] ?? []));
+            }
+        }
+        if ($customerId !== '') {
+            if ($customerIds) {
+                $customerIds = in_array($customerId, $customerIds, true) ? [$customerId] : ['__NO_MATCH__'];
+            } else {
+                $customerIds = [$customerId];
             }
         }
         $payload = [
@@ -1741,6 +1783,7 @@ function page_invoice_exports(): void
                 echo '<input type="hidden" name="date_from" value="' . h($dateFrom) . '">';
                 echo '<input type="hidden" name="date_to" value="' . h($dateTo) . '">';
                 echo '<input type="hidden" name="group" value="' . h($groupSlug) . '">';
+                echo '<input type="hidden" name="customer_id" value="' . h($customerId) . '">';
                 echo '<input type="hidden" name="filename_template" value="' . h($filenameTemplate) . '">';
                 echo '<div class="grid">';
                 field_text('batch_name', 'Batch/export folder name', 'invoice-pdfs-' . date('Y-m-d'), 'Used for the generated ZIP and export folder.');
@@ -1800,6 +1843,7 @@ function action_generate_invoice_exports(): never
         'date_from' => (string)($_POST['date_from'] ?? ''),
         'date_to' => (string)($_POST['date_to'] ?? ''),
         'group_name' => (string)($_POST['group'] ?? ''),
+        'customer_id_filter' => (string)($_POST['customer_id'] ?? ''),
         'organization_name' => (string)($settings['organization_name'] ?? $profile['name'] ?? ''),
         'footer_text' => (string)($settings['footer_text'] ?? ''),
         'page_size' => (string)($settings['page_size'] ?? 'Letter'),

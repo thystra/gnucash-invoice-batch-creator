@@ -27,7 +27,7 @@ Release notes are maintained in `CHANGELOG.md`.
 - Saves reusable invoice templates under each entity/profile.
 - Generates a GnuCash invoice import CSV under each entity/profile.
 - Generates GnuCash-like Customer Report PDFs in batch using saved groups and Chromium PDF rendering.
-- Exports existing invoices as individual PDF files, selected by date range/customer group or by individual invoice selection.
+- Exports existing invoices as individual PDF files, selected by date range, saved customer group, single customer, or by individual invoice selection.
 - Supports multiple A/R accounts in customer reports.
 - Stores report appearance settings, logo/banner uploads, custom CSS, and optional exported GnuCash HTML style references per entity/profile.
 - Supports posted invoices by default, with a configuration option to generate unposted invoices.
@@ -348,9 +348,9 @@ Open **Invoice PDFs** to export existing GnuCash invoices as separate PDF files.
 
 1. Upload/select a revised SQLite GnuCash book copy for the entity/profile.
 2. Open **Invoice PDFs**.
-3. Choose an invoice date range and, optionally, a saved customer group filter.
+3. Choose an invoice date range and, optionally, a saved customer group filter or a single customer from the active book.
 4. Click **Show available invoices**.
-5. Review invoices grouped by customer and deselect any invoices you do not want.
+5. Review invoices grouped by customer and deselect any invoices you do not want. For one-off exports, use the **Single customer filter** dropdown rather than creating a saved group.
 6. Generate the batch. Each selected invoice is rendered as its own PDF and all PDFs are packaged into `invoice-pdfs.zip`.
 
 Invoice PDF export currently requires a SQLite GnuCash book copy because it reads invoice, customer, entry, transaction, split, and account tables directly. XML book scanning still works for customer/invoice ID discovery, but invoice PDF rendering expects SQLite table data.

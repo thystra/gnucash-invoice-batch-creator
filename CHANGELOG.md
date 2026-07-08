@@ -1,3 +1,9 @@
+## v0.1.22 notes
+
+- The **Invoice PDFs** page now includes a **Single customer filter** dropdown populated from the active uploaded GnuCash book.
+- Users can export invoices for one customer without first creating a saved customer group.
+- The single-customer filter can be combined with the date range and, when desired, with a saved group filter. If both are selected, only invoices matching both filters are shown.
+
 ## v0.1.21 notes
 
 - Added an **Invoice PDF Exports** page for exporting one PDF per selected invoice.
