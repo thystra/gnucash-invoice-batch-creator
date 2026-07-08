@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const APP_NAME = 'GnuCash Invoice Batch Creator';
-const APP_VERSION = '0.1.20';
+const APP_VERSION = '0.1.21';
 define('BASE_PATH', dirname(__DIR__));
 define('CONFIG_PATH', BASE_PATH . '/config/config.php');
 define('CONFIG_EXAMPLE_PATH', BASE_PATH . '/config/config.example.php');
@@ -420,7 +420,7 @@ function profile_json_path(string $slug): string
 
 function ensure_profile_dirs(string $slug): void
 {
-    foreach (['books', 'uploads', 'generated', 'groups', 'templates', 'report-assets', 'report-templates', 'reports', 'cache', 'log'] as $dir) {
+    foreach (['books', 'uploads', 'generated', 'groups', 'templates', 'report-assets', 'report-templates', 'reports', 'invoice-exports', 'cache', 'log'] as $dir) {
         $path = profile_dir($slug) . '/' . $dir;
         if (!is_dir($path)) {
             mkdir($path, 0770, true);
@@ -591,6 +591,17 @@ function reports_batch_dir(?string $batch = null, ?array $profile = null): strin
     return $batch === null || $batch === '' ? $base : $base . '/' . basename($batch);
 }
 
+
+function invoice_exports_batch_dir(?string $batch = null, ?array $profile = null): string
+{
+    $profile = $profile ?: active_profile();
+    if (!is_array($profile)) {
+        return BASE_PATH . '/var/generated';
+    }
+    $base = profile_dir((string)$profile['slug']) . '/invoice-exports';
+    return $batch === null || $batch === '' ? $base : $base . '/' . basename((string)$batch);
+}
+
 function require_profile_configured(): array
 {
     $profile = active_profile();
@@ -702,7 +713,7 @@ function render_header(string $title): void
     if ($profile) {
         echo '<span class="entity">' . h($profile['name']) . '</span>';
     }
-    echo '</div><nav><a href="?">Home</a><a href="?action=wizard">Batch Wizard</a><a href="?action=groups">Groups</a><a href="?action=templates">Templates</a><a href="?action=reports">Reports</a><a href="?action=config">Settings</a></nav></header>';
+    echo '</div><nav><a href="?">Home</a><a href="?action=wizard">Batch Wizard</a><a href="?action=groups">Groups</a><a href="?action=templates">Templates</a><a href="?action=reports">Reports</a><a href="?action=invoice_exports">Invoice PDFs</a><a href="?action=config">Settings</a></nav></header>';
     echo '<main class="wrap">';
     foreach (pop_flashes() as $message) {
         echo '<div class="flash ' . h($message['type']) . '">' . h($message['message']) . '</div>';

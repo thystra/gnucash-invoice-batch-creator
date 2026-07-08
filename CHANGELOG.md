@@ -1,3 +1,12 @@
+## v0.1.21 notes
+
+- Added an **Invoice PDF Exports** page for exporting one PDF per selected invoice.
+- Users can find available invoices by date range, optionally filtered to a saved customer group.
+- Available invoices are grouped by customer and can be selected/deselected before export.
+- Generated invoice PDFs are written one file per invoice and packaged into `invoice-pdfs.zip` under the active entity/profile.
+- Invoice export batches have their own Recent batches/download area and delete action.
+- Invoice PDFs reuse the report appearance settings where practical: organization name, logo, style reference CSS, custom CSS, page size, filename customer source, filename date format, and Chromium PDF pagination.
+
 ## v0.1.20 notes
 
 - The Batch Wizard customer picker now includes a **Select non-zero visible** button when the active uploaded book is a SQLite GnuCash book with transaction tables.

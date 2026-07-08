@@ -30,6 +30,10 @@ try {
         'save_group' => action_save_group(),
         'templates' => page_templates(),
         'reports' => page_reports(),
+        'invoice_exports' => page_invoice_exports(),
+        'generate_invoice_exports' => action_generate_invoice_exports(),
+        'download_invoice_export_zip' => action_download_invoice_export_zip(),
+        'delete_invoice_export_batch' => action_delete_invoice_export_batch(),
         'save_report_settings' => action_save_report_settings(),
         'generate_reports' => action_generate_reports(),
         'download_report_zip' => action_download_report_zip(),
@@ -96,6 +100,7 @@ function page_home(): void
     echo '<section class="card"><h2>Saved groups</h2><p>Reuse a customer group for monthly dues or repeated billing runs. Groups are stored per entity.</p><p><a class="button secondary" href="?action=groups">Manage groups</a></p></section>';
     echo '<section class="card"><h2>Templates</h2><p>Reuse descriptions, accounts, dates, posting settings, taxes, and price levels. Templates are stored per entity.</p><p><a class="button secondary" href="?action=templates">Manage templates</a></p></section>';
     echo '<section class="card"><h2>Customer reports</h2><p>Generate customer statement PDFs from a revised uploaded GnuCash book, using saved groups and Chromium PDF rendering.</p><p><a class="button secondary" href="?action=reports">Batch reports</a></p></section>';
+    echo '<section class="card"><h2>Invoice PDFs</h2><p>Export one PDF file per selected invoice, either by date range or by selecting individual invoices from the active book.</p><p><a class="button secondary" href="?action=invoice_exports">Export invoices</a></p></section>';
     echo '<section class="card"><h2>Support / issues</h2><p>Support continued development, send tips, or report problems back to the GitHub repository.</p><p><a class="button secondary inline" href="https://github.com/thystra/gnucash-invoice-batch-creator" rel="noopener">Project repo</a><a class="button secondary inline" href="https://github.com/thystra/gnucash-invoice-batch-creator/issues" rel="noopener">Report issue</a><a class="button secondary inline" href="https://ko-fi.com/thewolfandtheraven" rel="noopener">Support/tips</a></p></section>';
     echo '<section class="card"><h2>Book scan</h2>';
     if ($book !== '' && is_file($book)) {
@@ -1663,6 +1668,221 @@ function render_recent_report_batches(): void
     echo '<form method="post" action="?action=clean_reports" onsubmit="return confirm(&quot;Delete ALL customer report output for this entity?&quot;)">' . csrf_field();
     echo '<label for="confirm_clean_reports">Type DELETE to confirm</label><input type="text" id="confirm_clean_reports" name="confirm_clean_reports" autocomplete="off">';
     echo '<div class="actions"><button class="danger" type="submit">Clean reports directory</button></div></form></details>';
+    echo '</section>';
+}
+
+
+function page_invoice_exports(): void
+{
+    $profile = require_profile_configured();
+    $book = require_book_configured();
+    render_header('Invoice PDF Exports');
+
+    $readyBatch = basename((string)($_GET['batch'] ?? ''));
+    if ($readyBatch !== '' && is_dir(invoice_exports_batch_dir($readyBatch, $profile))) {
+        $zipReady = is_file(invoice_exports_batch_dir($readyBatch, $profile) . '/invoice-pdfs.zip');
+        echo '<div class="flash ok report-ready"><strong>Invoice export ready:</strong> <code>' . h($readyBatch) . '</code>. ';
+        echo '<a class="button secondary inline" href="#invoice-export-downloads">Jump to download area</a>';
+        if ($zipReady) {
+            echo ' <a class="button inline" href="?action=download_invoice_export_zip&amp;batch=' . h($readyBatch) . '">Download ZIP now</a>';
+        }
+        echo '</div>';
+    }
+
+    $groups = list_named_json(profile_data_dir('groups'));
+    $settings = profile_report_settings($profile);
+    $dateFrom = (string)($_GET['date_from'] ?? date('Y-01-01'));
+    $dateTo = (string)($_GET['date_to'] ?? date('Y-m-d'));
+    $groupSlug = basename((string)($_GET['group'] ?? ''));
+    $showPreview = isset($_GET['show_invoices']) || isset($_GET['date_from']) || isset($_GET['date_to']) || $groupSlug !== '';
+    $filenameTemplate = (string)($_GET['filename_template'] ?? '{customer} - {invoice_id} - invoice');
+
+    echo '<section class="card"><h2>Find invoices</h2>';
+    echo '<p class="help">Select invoices from the active uploaded GnuCash book, then export each invoice as its own PDF file. Use a date range, a saved customer group, or both. Invoice generation currently requires a SQLite GnuCash book copy.</p>';
+    echo '<form method="get" action="">';
+    echo '<input type="hidden" name="action" value="invoice_exports">';
+    echo '<input type="hidden" name="show_invoices" value="1">';
+    echo '<div class="grid">';
+    field_date('date_from', 'Invoice date from', $dateFrom);
+    field_date('date_to', 'Invoice date to', $dateTo);
+    echo '<div><label for="group">Customer group filter</label><select id="group" name="group"><option value="">All customers with invoices in range</option>';
+    foreach ($groups as $group) {
+        $selected = $groupSlug === (string)$group['slug'] ? ' selected' : '';
+        echo '<option value="' . h((string)$group['slug']) . '"' . $selected . '>' . h((string)$group['name']) . '</option>';
+    }
+    echo '</select><div class="help">Optional. Restrict invoice selection to a saved group.</div></div>';
+    field_text('filename_template', 'PDF filename template', $filenameTemplate, 'Variables: {customer}, {customer_id}, {customer_number}, {company_name}, {billing_name}, {invoice_id}, {invoice_date}, {date}, {date_from}, {date_to}, {text}.');
+    echo '</div>';
+    echo '<div class="actions"><button type="submit">Show available invoices</button></div></form></section>';
+
+    if ($showPreview) {
+        $customerIds = [];
+        if ($groupSlug !== '') {
+            $group = json_read_file(profile_data_dir('groups') . '/' . $groupSlug . '.json', []);
+            if (is_array($group)) {
+                $customerIds = array_values(array_map('strval', $group['customer_ids'] ?? []));
+            }
+        }
+        $payload = [
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
+            'customer_ids' => $customerIds,
+        ];
+        $result = run_python(['invoice-export-metadata', '--book', $book], $payload);
+        echo '<section class="card"><h2>Available invoices</h2>';
+        if (!$result['ok'] || !is_array($result['json']) || empty($result['json']['ok'])) {
+            echo '<div class="flash error">Unable to scan invoices. This feature requires a readable SQLite GnuCash book copy.<pre>' . h(trim(($result['stderr'] ?? '') . "\n" . ($result['stdout'] ?? ''))) . '</pre></div>';
+        } else {
+            $invoices = is_array($result['json']['invoices'] ?? null) ? $result['json']['invoices'] : [];
+            if (!$invoices) {
+                echo '<p>No posted invoices were found for the selected date range/customer filter.</p>';
+            } else {
+                echo '<form method="post" action="?action=generate_invoice_exports">' . csrf_field();
+                echo '<input type="hidden" name="date_from" value="' . h($dateFrom) . '">';
+                echo '<input type="hidden" name="date_to" value="' . h($dateTo) . '">';
+                echo '<input type="hidden" name="group" value="' . h($groupSlug) . '">';
+                echo '<input type="hidden" name="filename_template" value="' . h($filenameTemplate) . '">';
+                echo '<div class="grid">';
+                field_text('batch_name', 'Batch/export folder name', 'invoice-pdfs-' . date('Y-m-d'), 'Used for the generated ZIP and export folder.');
+                echo '<div><label class="check"><input type="checkbox" name="show_page_numbers" value="1" ' . (!empty($settings['show_page_numbers']) ? 'checked' : '') . '> Add page number footer</label><div class="help">Uses the same Chromium PDF footer method as customer statements.</div></div>';
+                echo '</div>';
+                echo '<div class="table-tools"><button type="button" class="secondary" onclick="document.querySelectorAll(\'.invoice-select\').forEach(cb => cb.checked = true)">Select all visible</button> <button type="button" class="secondary" onclick="document.querySelectorAll(\'.invoice-select\').forEach(cb => cb.checked = false)">Select none visible</button></div>';
+                echo '<table class="invoice-picker"><thead><tr><th>Select</th><th>Customer</th><th>Invoice</th><th>Date</th><th>Due</th><th>Description</th><th class="num">Total</th></tr></thead><tbody>';
+                $lastCustomer = '';
+                foreach ($invoices as $invoice) {
+                    $customerLabel = (string)($invoice['customer_name'] ?? $invoice['customer_id'] ?? '');
+                    if ($customerLabel !== $lastCustomer) {
+                        echo '<tr class="group-row"><td colspan="7"><strong>' . h($customerLabel) . '</strong></td></tr>';
+                        $lastCustomer = $customerLabel;
+                    }
+                    echo '<tr>';
+                    echo '<td><input class="invoice-select" type="checkbox" name="invoice_guids[]" value="' . h((string)$invoice['guid']) . '" checked></td>';
+                    echo '<td>' . h((string)($invoice['customer_id'] ?? '')) . '</td>';
+                    echo '<td><code>' . h((string)($invoice['id'] ?? '')) . '</code></td>';
+                    echo '<td>' . h((string)($invoice['date'] ?? '')) . '</td>';
+                    echo '<td>' . h((string)($invoice['due_date'] ?? '')) . '</td>';
+                    echo '<td>' . h((string)($invoice['description'] ?? '')) . '</td>';
+                    echo '<td class="num">' . h((string)($invoice['total_display'] ?? '')) . '</td>';
+                    echo '</tr>';
+                }
+                echo '</tbody></table>';
+                echo '<div class="actions"><button type="submit">Generate one PDF per selected invoice</button></div>';
+                echo '</form>';
+            }
+        }
+        echo '</section>';
+    }
+
+    render_recent_invoice_export_batches();
+    render_footer();
+}
+
+function action_generate_invoice_exports(): never
+{
+    check_csrf();
+    $profile = require_profile_configured();
+    $book = require_book_configured();
+    $invoiceGuids = array_values(array_unique(array_map('strval', $_POST['invoice_guids'] ?? [])));
+    if (!$invoiceGuids) {
+        flash('error', 'Select at least one invoice to export.');
+        redirect_to('invoice_exports');
+    }
+    $batch = slugify((string)($_POST['batch_name'] ?? 'invoice-pdfs-' . date('Y-m-d')));
+    if ($batch === '') {
+        $batch = 'invoice-pdfs-' . date('Ymd-His');
+    }
+    $outDir = invoice_exports_batch_dir($batch, $profile);
+    $settings = profile_report_settings($profile);
+    $logoPath = !empty($settings['logo_file']) ? report_asset_path((string)$settings['logo_file'], $profile) : '';
+    $stylePath = !empty($settings['style_reference_file']) ? report_asset_path((string)$settings['style_reference_file'], $profile) : '';
+    $payload = [
+        'invoice_guids' => $invoiceGuids,
+        'date_from' => (string)($_POST['date_from'] ?? ''),
+        'date_to' => (string)($_POST['date_to'] ?? ''),
+        'group_name' => (string)($_POST['group'] ?? ''),
+        'organization_name' => (string)($settings['organization_name'] ?? $profile['name'] ?? ''),
+        'footer_text' => (string)($settings['footer_text'] ?? ''),
+        'page_size' => (string)($settings['page_size'] ?? 'Letter'),
+        'show_page_numbers' => isset($_POST['show_page_numbers']),
+        'logo_path' => is_file($logoPath) ? $logoPath : '',
+        'style_reference_path' => is_file($stylePath) ? $stylePath : '',
+        'custom_css' => (string)($settings['custom_css'] ?? ''),
+        'filename_template' => (string)($_POST['filename_template'] ?? '{customer} - {invoice_id} - invoice'),
+        'filename_customer_source' => (string)($settings['filename_customer_source'] ?? 'billing_name'),
+        'filename_text' => 'invoice',
+        'filename_date_format' => (string)($settings['filename_date_format'] ?? 'Y-m-d'),
+        'chromium_bin' => (string)app_config('chromium_bin', '/snap/bin/chromium'),
+    ];
+    $result = run_python(['invoice-pdfs', '--book', $book, '--out-dir', $outDir], $payload);
+    if (!$result['ok'] || !is_array($result['json']) || empty($result['json']['ok'])) {
+        flash('error', 'Invoice PDF export failed: ' . trim(($result['stderr'] ?? '') . ' ' . ($result['stdout'] ?? '')));
+        redirect_to('invoice_exports');
+    }
+    flash('ok', 'Generated ' . h((string)($result['json']['pdf_count'] ?? 0)) . ' invoice PDFs.');
+    redirect_to('invoice_exports', ['batch' => $batch]);
+}
+
+function action_download_invoice_export_zip(): never
+{
+    require_profile_configured();
+    $batch = basename((string)($_GET['batch'] ?? ''));
+    $zip = invoice_exports_batch_dir($batch) . '/invoice-pdfs.zip';
+    if ($batch === '' || !is_file($zip)) {
+        http_response_code(404);
+        exit('Invoice export ZIP not found.');
+    }
+    header('Content-Type: application/zip');
+    header('Content-Disposition: attachment; filename="' . $batch . '.zip"');
+    header('Content-Length: ' . filesize($zip));
+    readfile($zip);
+    exit;
+}
+
+function action_delete_invoice_export_batch(): never
+{
+    check_csrf();
+    require_profile_configured();
+    $batch = basename((string)($_POST['batch'] ?? ''));
+    if ($batch === '') {
+        flash('error', 'No invoice export batch selected.');
+        redirect_to('invoice_exports');
+    }
+    $dir = invoice_exports_batch_dir($batch);
+    $base = realpath(invoice_exports_batch_dir()) ?: invoice_exports_batch_dir();
+    $real = realpath($dir);
+    if ($real === false || !str_starts_with($real, rtrim($base, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
+        flash('error', 'Invalid invoice export batch path.');
+        redirect_to('invoice_exports');
+    }
+    remove_tree($real);
+    flash('ok', 'Deleted invoice export batch: ' . $batch);
+    redirect_to('invoice_exports');
+}
+
+function render_recent_invoice_export_batches(): void
+{
+    echo '<section class="card" id="invoice-export-downloads"><h2>Recent invoice export batches</h2>';
+    $base = invoice_exports_batch_dir();
+    $dirs = glob($base . '/*', GLOB_ONLYDIR) ?: [];
+    usort($dirs, fn($a, $b) => (filemtime($b) ?: 0) <=> (filemtime($a) ?: 0));
+    if (!$dirs) {
+        echo '<p>No invoice PDF export batches generated yet for this entity.</p>';
+    } else {
+        echo '<table><tr><th>Batch</th><th>Generated</th><th>PDFs</th><th>Actions</th></tr>';
+        foreach (array_slice($dirs, 0, 10) as $dir) {
+            $batch = basename($dir);
+            $manifest = json_read_file($dir . '/batch-manifest.json', []);
+            $pdfCount = is_array($manifest) ? (int)($manifest['pdf_count'] ?? 0) : 0;
+            $generated = is_array($manifest) ? (string)($manifest['generated_at'] ?? '') : '';
+            echo '<tr><td><code>' . h($batch) . '</code></td><td>' . h(substr($generated, 0, 19)) . '</td><td>' . h($pdfCount) . '</td><td>';
+            if (is_file($dir . '/invoice-pdfs.zip')) {
+                echo '<a class="button secondary inline" href="?action=download_invoice_export_zip&batch=' . h($batch) . '">Download ZIP</a>';
+            }
+            echo '<form class="inline" method="post" action="?action=delete_invoice_export_batch" onsubmit="return confirm(&quot;Delete this invoice export batch?&quot;)">' . csrf_field() . '<input type="hidden" name="batch" value="' . h($batch) . '"><button class="danger" type="submit">Delete</button></form>';
+            echo '</td></tr>';
+        }
+        echo '</table>';
+    }
     echo '</section>';
 }
 

@@ -91,3 +91,7 @@ details > summary::marker { color: var(--accent); }
 .foot a { margin: 0 0.15rem; }
 .balance-cell { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .balance-cell.nonzero { font-weight: 700; color: var(--danger); }
+
+
+.invoice-picker .group-row td { background: rgba(127,127,127,.10); color: var(--muted); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }

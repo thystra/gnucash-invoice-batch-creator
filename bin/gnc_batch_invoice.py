@@ -1692,6 +1692,371 @@ def customer_reports_json(args: argparse.Namespace) -> None:
     apply_runtime_permissions(out_dir)
     print_json(manifest)
 
+
+# ---------------------------------------------------------------------------
+# Per-invoice PDF export
+# ---------------------------------------------------------------------------
+
+INVOICE_CSS = """
+@page { size: __PAGE_SIZE__; margin: 0.45in; }
+* { box-sizing: border-box; }
+body { font-family: Arial, Helvetica, sans-serif; color: #222; font-size: 11pt; }
+.invoice-header { display: grid; grid-template-columns: 1fr auto; gap: 1rem; align-items: start; margin-bottom: 1.1rem; }
+.invoice-title { font-size: 22pt; font-weight: 700; margin: 0 0 .5rem 0; }
+.invoice-meta { text-align: right; line-height: 1.7; }
+.logo { max-height: 72px; max-width: 240px; display: block; margin-left: auto; margin-bottom: .4rem; }
+.bill-to { border: 1px solid #888; padding: .65rem; margin: .8rem 0 1rem 0; width: 48%; min-height: 5rem; }
+.bill-to h2 { font-size: 11pt; margin: 0 0 .35rem 0; color: #555; }
+table { border-collapse: collapse; width: 100%; margin-top: .6rem; }
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+th, td { border: 1px solid #8a8a8a; padding: 5px 6px; vertical-align: top; }
+th { font-weight: 700; text-align: center; background: #f4f4f4; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+td.date { white-space: nowrap; }
+.invoice-total td { font-weight: 700; font-size: 12pt; }
+.notes { margin-top: 1rem; white-space: pre-wrap; }
+.footer { margin-top: 1rem; color: #555; font-size: 9pt; }
+"""
+
+
+def _first_existing(cols: set[str], names: list[str], default: str = "") -> str:
+    for name in names:
+        if name in cols:
+            return name
+    return default
+
+
+def _entry_amount(entry: sqlite3.Row, cols: set[str]) -> Decimal:
+    qn = entry["quantity_num"] if "quantity_num" in cols else 1
+    qd = entry["quantity_denom"] if "quantity_denom" in cols else 1
+    quantity = dec_from_num_denom(qn, qd)
+    price_num_col = _first_existing(cols, ["i_price_num", "price_num", "b_price_num"])
+    price_den_col = _first_existing(cols, ["i_price_denom", "price_denom", "b_price_denom"])
+    price = dec_from_num_denom(entry[price_num_col], entry[price_den_col]) if price_num_col and price_den_col else Decimal("0")
+    discount_num_col = _first_existing(cols, ["i_discount_num", "discount_num", "b_discount_num"])
+    discount_den_col = _first_existing(cols, ["i_discount_denom", "discount_denom", "b_discount_denom"])
+    discount = dec_from_num_denom(entry[discount_num_col], entry[discount_den_col]) if discount_num_col and discount_den_col else Decimal("0")
+    return (quantity * price) - discount
+
+
+def _invoice_posted_total(cur: sqlite3.Cursor, invoice: sqlite3.Row) -> Decimal | None:
+    post_txn = str(invoice["post_txn"] or "") if "post_txn" in invoice.keys() else ""
+    post_acc = str(invoice["post_acc"] or "") if "post_acc" in invoice.keys() else ""
+    if not post_txn or not table_exists(cur, "splits"):
+        return None
+    cols = table_columns(cur, "splits")
+    if not {"tx_guid", "value_num", "value_denom"}.issubset(cols):
+        return None
+    if post_acc and "account_guid" in cols:
+        row = cur.execute(
+            "SELECT value_num, value_denom FROM splits WHERE tx_guid=? AND account_guid=? LIMIT 1",
+            (post_txn, post_acc),
+        ).fetchone()
+    else:
+        row = cur.execute("SELECT value_num, value_denom FROM splits WHERE tx_guid=? LIMIT 1", (post_txn,)).fetchone()
+    if not row:
+        return None
+    return dec_from_num_denom(row["value_num"], row["value_denom"])
+
+
+def load_invoice_export_data(
+    con: sqlite3.Connection,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    customer_ids: list[str] | None = None,
+    invoice_guids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    cur = con.cursor()
+    needed = ["customers", "invoices"]
+    missing = [t for t in needed if not table_exists(cur, t)]
+    if missing:
+        raise RuntimeError("Invoice PDF export requires a SQLite GnuCash book with these missing tables: " + ", ".join(missing))
+
+    inv_cols = table_columns(cur, "invoices")
+    cust_cols = table_columns(cur, "customers")
+    entry_cols = table_columns(cur, "entries") if table_exists(cur, "entries") else set()
+    full_names = account_full_names(con)
+
+    cust_name_col = _first_existing(cust_cols, ["name", "id"], "id")
+    cust_billing_col = _first_existing(cust_cols, ["addr_name", "name", "id"], cust_name_col)
+    customers_by_guid: dict[str, dict[str, Any]] = {}
+    for row in cur.execute(f"SELECT guid, id, {cust_name_col} AS name, {cust_billing_col} AS billing_name FROM customers"):
+        customers_by_guid[str(row["guid"])] = {
+            "guid": str(row["guid"]),
+            "id": str(row["id"]),
+            "name": str(row["name"] or row["id"]),
+            "billing_name": str(row["billing_name"] or row["name"] or row["id"]),
+        }
+
+    where: list[str] = []
+    params: list[Any] = []
+    if invoice_guids:
+        where.append("i.guid IN (" + ",".join("?" for _ in invoice_guids) + ")")
+        params.extend(invoice_guids)
+    if customer_ids:
+        customer_guid_filter = [guid for guid, cust in customers_by_guid.items() if cust.get("id") in set(customer_ids)]
+        if not customer_guid_filter:
+            return []
+        where.append("i.owner_guid IN (" + ",".join("?" for _ in customer_guid_filter) + ")")
+        params.extend(customer_guid_filter)
+    if date_from is not None:
+        where.append("substr(COALESCE(NULLIF(i.date_posted,''), NULLIF(i.date_opened,'')), 1, 10) >= ?")
+        params.append(date_from.isoformat())
+    if date_to is not None:
+        where.append("substr(COALESCE(NULLIF(i.date_posted,''), NULLIF(i.date_opened,'')), 1, 10) <= ?")
+        params.append(date_to.isoformat())
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+
+    rows = list(cur.execute(
+        "SELECT i.* FROM invoices i" + where_sql + " ORDER BY i.owner_guid, COALESCE(NULLIF(i.date_posted,''), NULLIF(i.date_opened,'')), i.id",
+        params,
+    ))
+    invoices: list[dict[str, Any]] = []
+    for inv in rows:
+        owner_guid = str(inv["owner_guid"] or "") if "owner_guid" in inv.keys() else ""
+        customer = customers_by_guid.get(owner_guid)
+        if not customer:
+            continue
+        inv_guid = str(inv["guid"])
+        inv_date = str((inv["date_posted"] if "date_posted" in inv.keys() else "") or (inv["date_opened"] if "date_opened" in inv.keys() else ""))[:10]
+        due_date = ""
+        for col in ["date_due", "due_date"]:
+            if col in inv.keys() and inv[col]:
+                due_date = str(inv[col])[:10]
+                break
+        if not due_date:
+            due_date = inv_date
+        entries: list[dict[str, Any]] = []
+        if entry_cols and "invoice" in entry_cols:
+            desc_col = _first_existing(entry_cols, ["description", "notes"], "''")
+            action_col = _first_existing(entry_cols, ["action"], "''")
+            acct_col = _first_existing(entry_cols, ["i_acct", "account", "b_acct"], "''")
+            for entry in cur.execute(f"SELECT * FROM entries WHERE invoice=? ORDER BY date, guid", (inv_guid,)):
+                quantity = dec_from_num_denom(entry["quantity_num"] if "quantity_num" in entry_cols else 1, entry["quantity_denom"] if "quantity_denom" in entry_cols else 1)
+                price_num_col = _first_existing(entry_cols, ["i_price_num", "price_num", "b_price_num"])
+                price_den_col = _first_existing(entry_cols, ["i_price_denom", "price_denom", "b_price_denom"])
+                price = dec_from_num_denom(entry[price_num_col], entry[price_den_col]) if price_num_col and price_den_col else Decimal("0")
+                amount = _entry_amount(entry, entry_cols)
+                acct_guid = str(entry[acct_col] or "") if acct_col and acct_col != "''" else ""
+                entries.append({
+                    "date": str(entry["date"] if "date" in entry_cols else inv_date)[:10],
+                    "description": str(entry[desc_col] or "") if desc_col != "''" else "",
+                    "action": str(entry[action_col] or "") if action_col != "''" else "",
+                    "account": full_names.get(acct_guid, acct_guid),
+                    "quantity": quantity,
+                    "unit_price": price,
+                    "amount": amount,
+                })
+        entry_total = sum((e["amount"] for e in entries), Decimal("0"))
+        posted_total = _invoice_posted_total(cur, inv)
+        total = posted_total if posted_total is not None else entry_total
+        description = first_invoice_description(cur, inv_guid) if table_exists(cur, "entries") else ""
+        if not description:
+            description = str((inv["notes"] if "notes" in inv.keys() else "") or (inv["billing_id"] if "billing_id" in inv.keys() else "") or "Invoice")
+        invoices.append({
+            "guid": inv_guid,
+            "id": str(inv["id"] or ""),
+            "customer": customer,
+            "customer_id": customer["id"],
+            "customer_name": customer["name"],
+            "billing_name": customer.get("billing_name", ""),
+            "date": inv_date,
+            "due_date": due_date,
+            "notes": str(inv["notes"] if "notes" in inv.keys() else ""),
+            "billing_id": str(inv["billing_id"] if "billing_id" in inv.keys() else ""),
+            "post_acc": str(inv["post_acc"] if "post_acc" in inv.keys() else ""),
+            "ar_account": full_names.get(str(inv["post_acc"] if "post_acc" in inv.keys() else ""), str(inv["post_acc"] if "post_acc" in inv.keys() else "")),
+            "description": description,
+            "entries": entries,
+            "total": total,
+            "total_display": money(total),
+        })
+    return invoices
+
+
+def invoice_export_metadata_json(args: argparse.Namespace) -> None:
+    payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
+    book = Path(args.book).expanduser()
+    date_from = parse_form_date(str(payload.get("date_from") or ""))
+    date_to = parse_form_date(str(payload.get("date_to") or ""))
+    customer_ids = dedupe(payload.get("customer_ids", []))
+    try:
+        con = sqlite_connect_ro(book)
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"Invoice export requires a readable SQLite GnuCash book: {exc}") from exc
+    try:
+        invoices = load_invoice_export_data(con, date_from=date_from, date_to=date_to, customer_ids=customer_ids)
+    finally:
+        con.close()
+    print_json({
+        "ok": True,
+        "invoice_count": len(invoices),
+        "invoices": [
+            {
+                "guid": inv["guid"],
+                "id": inv["id"],
+                "customer_id": inv["customer_id"],
+                "customer_name": inv["customer_name"],
+                "billing_name": inv.get("billing_name", ""),
+                "date": inv["date"],
+                "due_date": inv["due_date"],
+                "description": inv["description"],
+                "total": str(inv["total"]),
+                "total_display": inv["total_display"],
+            }
+            for inv in invoices
+        ],
+    })
+
+
+def render_invoice_filename(invoice: dict[str, Any], payload: dict[str, Any]) -> str:
+    customer = invoice.get("customer", {})
+    template = str(payload.get("filename_template") or "{customer} - {invoice_id} - invoice")
+    source = str(payload.get("filename_customer_source") or "billing_name")
+    date_fmt = str(payload.get("filename_date_format") or "Y-m-d")
+    inv_date = filename_date(invoice.get("date", ""), date_fmt)
+    date_from = filename_date(payload.get("date_from", ""), date_fmt)
+    date_to = filename_date(payload.get("date_to", ""), date_fmt)
+    selected_customer = filename_customer_value(customer, source)
+    values = {
+        "customer": selected_customer,
+        "customer_id": str(customer.get("id") or invoice.get("customer_id") or ""),
+        "customer_number": str(customer.get("id") or invoice.get("customer_id") or ""),
+        "company_name": str(customer.get("name") or invoice.get("customer_name") or ""),
+        "name": str(customer.get("name") or invoice.get("customer_name") or ""),
+        "billing_name": str(customer.get("billing_name") or invoice.get("billing_name") or ""),
+        "invoice_id": str(invoice.get("id") or ""),
+        "invoice_date": inv_date,
+        "date": inv_date,
+        "date_from": date_from,
+        "date_to": date_to,
+        "text": str(payload.get("filename_text") or "invoice"),
+    }
+
+    def repl(match: re.Match[str]) -> str:
+        return values.get(match.group(1).strip().lower(), "")
+
+    rendered = re.sub(r"\{([A-Za-z0-9_ -]+)\}", repl, template)
+    rendered = re.sub(r"\s+", " ", rendered).strip()
+    return safe_filename(rendered)
+
+
+def render_invoice_html(invoice: dict[str, Any], payload: dict[str, Any], style_css: str) -> str:
+    page_size = str(payload.get("page_size") or "Letter")
+    css = INVOICE_CSS.replace("__PAGE_SIZE__", page_size) + "\n" + style_css + "\n" + str(payload.get("custom_css") or "")
+    customer = invoice.get("customer", {})
+    logo = ""
+    logo_path = str(payload.get("logo_path") or "")
+    if logo_path and Path(logo_path).is_file():
+        logo = f'<img class="logo" src="{html_escape(Path(logo_path).resolve().as_uri())}" alt="Logo">'
+    bill_name = customer.get("billing_name") or customer.get("name") or invoice.get("customer_name") or ""
+    entries = invoice.get("entries") or []
+    if entries:
+        lines = []
+        for entry in entries:
+            lines.append(
+                "<tr>"
+                f"<td>{html_escape(entry.get('description',''))}</td>"
+                f"<td>{html_escape(entry.get('action',''))}</td>"
+                f"<td>{html_escape(entry.get('account',''))}</td>"
+                f"<td class='num'>{html_escape(str(entry.get('quantity','')))}</td>"
+                f"<td class='num'>{html_escape(money(entry.get('unit_price', Decimal('0'))))}</td>"
+                f"<td class='num'>{html_escape(money(entry.get('amount', Decimal('0'))))}</td>"
+                "</tr>"
+            )
+        body = "\n".join(lines)
+    else:
+        body = f"<tr><td>{html_escape(invoice.get('description','Invoice'))}</td><td></td><td>{html_escape(invoice.get('ar_account',''))}</td><td class='num'>1</td><td class='num'>{html_escape(money(invoice.get('total', Decimal('0'))))}</td><td class='num'>{html_escape(money(invoice.get('total', Decimal('0'))))}</td></tr>"
+    footer = f"<div class='footer'>{html_escape(payload.get('footer_text',''))}</div>" if payload.get("footer_text") else ""
+    html = f"""<!doctype html><html><head><meta charset="utf-8"><style>{css}</style></head><body>
+<div class="invoice-header">
+  <div>
+    <h1 class="invoice-title">Invoice {html_escape(invoice.get('id',''))}</h1>
+    <div><strong>Date:</strong> {html_escape(display_date(invoice.get('date','')))}</div>
+    <div><strong>Due date:</strong> {html_escape(display_date(invoice.get('due_date','')))}</div>
+    <div><strong>Customer ID:</strong> {html_escape(invoice.get('customer_id',''))}</div>
+  </div>
+  <div class="invoice-meta">{logo}<div>{html_escape(payload.get('organization_name',''))}</div></div>
+</div>
+<div class="bill-to"><h2>Bill To</h2>{html_escape(bill_name)}<br>{html_escape(customer.get('name',''))}</div>
+<table><thead><tr><th>Description</th><th>Action</th><th>Account</th><th class="num">Qty</th><th class="num">Unit Price</th><th class="num">Amount</th></tr></thead><tbody>{body}<tr class="invoice-total"><td colspan="5" class="num">Total</td><td class="num">{html_escape(money(invoice.get('total', Decimal('0'))))}</td></tr></tbody></table>
+<div class="notes">{html_escape(invoice.get('notes',''))}</div>
+{footer}
+</body></html>"""
+    return html
+
+
+def invoice_pdfs_json(args: argparse.Namespace) -> None:
+    payload = json.load(sys.stdin)
+    book = Path(args.book).expanduser()
+    out_dir = Path(args.out_dir).expanduser()
+    html_dir = out_dir / "html"
+    pdf_dir = out_dir / "pdf"
+    ensure_runtime_dir(html_dir)
+    ensure_runtime_dir(pdf_dir)
+    invoice_guids = dedupe(payload.get("invoice_guids", []))
+    if not invoice_guids:
+        raise RuntimeError("No invoice GUIDs were selected for export")
+    style_css = extract_style_reference(str(payload.get("style_reference_path") or ""))
+    try:
+        con = sqlite_connect_ro(book)
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"Invoice PDF export requires a readable SQLite GnuCash book: {exc}") from exc
+    try:
+        invoices = load_invoice_export_data(con, invoice_guids=invoice_guids)
+    finally:
+        con.close()
+
+    generated: list[dict[str, Any]] = []
+    used_names: set[str] = set()
+    for invoice in invoices:
+        html = render_invoice_html(invoice, payload, style_css)
+        base = render_invoice_filename(invoice, payload)
+        unique_base = base
+        n = 2
+        while unique_base.lower() in used_names:
+            unique_base = safe_filename(f"{base} ({n})")
+            n += 1
+        used_names.add(unique_base.lower())
+        html_path = html_dir / f"{unique_base}.html"
+        pdf_path = pdf_dir / f"{unique_base}.pdf"
+        html_path.write_text(html, encoding="utf-8")
+        apply_runtime_permissions(html_path)
+        render_pdf(str(payload.get("chromium_bin") or ""), html_path, pdf_path, show_page_numbers=bool(payload.get("show_page_numbers", True)))
+        apply_runtime_permissions(pdf_path)
+        generated.append({
+            "invoice_id": invoice["id"],
+            "invoice_guid": invoice["guid"],
+            "customer_id": invoice["customer_id"],
+            "customer_name": invoice["customer_name"],
+            "html": str(html_path),
+            "pdf": str(pdf_path),
+            "status": "generated",
+        })
+
+    zip_path = out_dir / "invoice-pdfs.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for item in generated:
+            zf.write(item["pdf"], arcname=Path(item["pdf"]).name)
+    apply_runtime_permissions(zip_path)
+    manifest = {
+        "ok": True,
+        "book": str(book),
+        "date_from": str(payload.get("date_from", "")),
+        "date_to": str(payload.get("date_to", "")),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "pdf_count": len(generated),
+        "zip": str(zip_path),
+        "invoices": generated,
+    }
+    manifest_path = out_dir / "batch-manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    apply_runtime_permissions(manifest_path)
+    apply_runtime_permissions(out_dir)
+    print_json(manifest)
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="GnuCash batch invoice creation helper")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1730,6 +2095,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--book", required=True)
     p.add_argument("--out-dir", required=True)
     p.set_defaults(func=customer_reports_json)
+
+    p = sub.add_parser("invoice-export-metadata", help="List invoices available for per-invoice PDF export")
+    p.add_argument("--book", required=True)
+    p.set_defaults(func=invoice_export_metadata_json)
+
+    p = sub.add_parser("invoice-pdfs", help="Generate one invoice PDF per selected invoice GUID from JSON stdin")
+    p.add_argument("--book", required=True)
+    p.add_argument("--out-dir", required=True)
+    p.set_defaults(func=invoice_pdfs_json)
 
     return parser
 

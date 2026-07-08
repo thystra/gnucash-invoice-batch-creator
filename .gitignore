@@ -40,6 +40,8 @@ var/templates/*
 !var/templates/.gitkeep
 var/profiles/*
 !var/profiles/.gitkeep
+var/invoice-exports/*
+!var/invoice-exports/.gitkeep
 var/cache/*
 var/log/*
 
