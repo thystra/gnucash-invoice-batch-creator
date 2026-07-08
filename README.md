@@ -423,7 +423,7 @@ python3 bin/gnc_batch_invoice.py generate --book /path/to/book.gnucash --out /tm
 
 Patch scripts from v0.1.6 onward are designed not to reset existing `var/` and `config/` permissions. They also remind you to run `bin/setup-local-permissions.sh` if runtime checks fail. v0.1.7 also improved Chromium detection for snap-based Ubuntu installs.
 
-A web application cannot create files as `$USER` while PHP-FPM is running as `www-data`. To make generated CSV files owned by `$USER`, the PHP-FPM worker for this app must run as `$SUER`. Use `bin/install-local-fpm-pool.sh` for that local/trusted deployment model.
+A web application cannot create files as `$USER` while PHP-FPM is running as `www-data`. To make generated CSV files owned by `$USER`, the PHP-FPM worker for this app must run as `$USER`. Use `bin/install-local-fpm-pool.sh` for that local/trusted deployment model.
 
 
 
