@@ -538,16 +538,16 @@ If PHP syntax checks pass but the browser still reports **No input file specifie
 
 ```nginx
 location /invoices/ {
-    alias /home/$USER/public_html/invoices/;
+    alias /home/YOUR_USER_NAME/public_html/invoices/;
     index index.php;
     try_files $uri $uri/ /invoices/index.php?$query_string;
 }
 
 location ~ ^/invoices/(.+\.php)$ {
-    alias /home/$USER/public_html/invoices/$1;
+    alias /home/YOUR_USER_NAME/public_html/invoices/$1;
     include fastcgi_params;
-    fastcgi_param SCRIPT_FILENAME /home/$USER/public_html/invoices/$1;
-    fastcgi_param DOCUMENT_ROOT /home/$USER/public_html/invoices;
+    fastcgi_param SCRIPT_FILENAME /home/YOUR_USER_NAME/public_html/invoices/$1;
+    fastcgi_param DOCUMENT_ROOT /home/YOUR_USER_NAME/public_html/invoices;
     fastcgi_pass unix:/run/php/gnucash-invoice-batch-creator.sock;
 }
 
